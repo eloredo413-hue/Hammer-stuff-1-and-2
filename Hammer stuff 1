@@ -1,6 +1,7 @@
 -- [[ BLOXY PARADOX
 -- SKYBOX + LIGHTING + PLASTIC + 2009 MATERIALS
 -- + LEGACY MATERIALS + SHADOWS + DESTROY GUI ADDON
+-- Materials dropdown: smooth plastic / plastic / 2009 / legacy
 -- Full executor-compatible replacement
 -- ]]
 
@@ -83,6 +84,9 @@ task.spawn(function()
 
 	local isSmoothPlasticEnabled =
 		config.isSmoothPlasticEnabled == true
+
+	local isPlasticEnabled =
+		config.isPlasticEnabled == true
 
 	local is2009MaterialsEnabled =
 		config.is2009MaterialsEnabled == true
@@ -768,7 +772,10 @@ task.spawn(function()
 
 	local function toSmooth(part)
 
-		if not part:IsA("BasePart") then
+		-- Deferred calls can land after a restore; skip them.
+		if not spState.active
+			or not part:IsA("BasePart")
+		then
 			return
 		end
 
@@ -852,6 +859,110 @@ task.spawn(function()
 
 		print(
 			"[Bloxy Paradox] Plastic restored."
+		)
+	end
+
+	------------------------------------------------------------
+	-- PLASTIC (EVERY MATERIAL -> SMOOTH PLASTIC)
+	-- Smooth plastic only converts Plastic parts; this one
+	-- converts everything. The two are mutually exclusive in
+	-- the materials dropdown so their restores never collide.
+	------------------------------------------------------------
+	local plState = {
+		active = false,
+		orig = {},
+		conn = nil
+	}
+
+	local function toPlastic(part)
+
+		if not plState.active
+			or not part:IsA("BasePart")
+			or part:IsA("Terrain")
+		then
+			return
+		end
+
+		if part.Material ==
+			Enum.Material.SmoothPlastic
+		then
+			return
+		end
+
+		if plState.orig[part] == nil then
+			plState.orig[part] =
+				part.Material
+		end
+
+		pcall(function()
+			part.Material =
+				Enum.Material.SmoothPlastic
+		end)
+	end
+
+	local function applyPlastic()
+
+		if plState.active then
+			return
+		end
+
+		plState.active = true
+
+		for _, object in ipairs(
+			Workspace:GetDescendants()
+		) do
+			toPlastic(object)
+		end
+
+		plState.conn =
+			Workspace.DescendantAdded:Connect(
+				function(object)
+
+					if plState.active then
+						task.defer(function()
+							toPlastic(object)
+						end)
+					end
+				end
+			)
+
+		print(
+			"[Bloxy Paradox] Plastic ON."
+		)
+	end
+
+	local function restorePlastic()
+
+		if not plState.active then
+			return
+		end
+
+		plState.active = false
+
+		if plState.conn then
+			pcall(function()
+				plState.conn:Disconnect()
+			end)
+			plState.conn = nil
+		end
+
+		for part, material in pairs(
+			plState.orig
+		) do
+
+			if part
+				and part.Parent
+			then
+				pcall(function()
+					part.Material = material
+				end)
+			end
+		end
+
+		plState.orig = {}
+
+		print(
+			"[Bloxy Paradox] Original materials restored."
 		)
 	end
 
@@ -1534,12 +1645,17 @@ task.spawn(function()
 	------------------------------------------------------------
 	-- UI HELPERS
 	------------------------------------------------------------
+	-- Rows given a parent are dropdown options: they sit inside
+	-- the dropdown with a small indent and slightly smaller text.
 	local function makeToggle(
 		name,
 		labelText,
 		yPos,
-		checked
+		checked,
+		parent
 	)
+
+		local isOption = parent ~= nil
 
 		local container =
 			Instance.new("Frame")
@@ -1548,14 +1664,18 @@ task.spawn(function()
 			name .. "Container"
 
 		container.Size =
-			UDim2.new(1, -30, 0, 30)
+			isOption
+			and UDim2.new(1, 0, 0, 30)
+			or UDim2.new(1, -30, 0, 30)
 
 		container.Position =
-			UDim2.new(0, 15, 0, yPos)
+			isOption
+			and UDim2.new(0, 0, 0, yPos)
+			or UDim2.new(0, 15, 0, yPos)
 
 		container.BackgroundTransparency = 1
 		container.ZIndex = 96
-		container.Parent = hammerPanel
+		container.Parent = parent or hammerPanel
 
 		local label =
 			Instance.new("TextLabel")
@@ -1564,7 +1684,14 @@ task.spawn(function()
 			name .. "Label"
 
 		label.Size =
-			UDim2.new(0, 115, 1, 0)
+			isOption
+			and UDim2.new(0, 112, 1, 0)
+			or UDim2.new(0, 115, 1, 0)
+
+		label.Position =
+			isOption
+			and UDim2.new(0, 6, 0, 0)
+			or UDim2.new(0, 0, 0, 0)
 
 		label.BackgroundTransparency = 1
 
@@ -1575,7 +1702,8 @@ task.spawn(function()
 				Enum.Font.SourceSansBold
 		end
 
-		label.TextSize = 16
+		label.TextSize =
+			isOption and 14 or 16
 
 		label.TextColor3 =
 			Color3.fromRGB(
@@ -1709,6 +1837,143 @@ task.spawn(function()
 	end
 
 	------------------------------------------------------------
+	-- DROPDOWN HELPERS
+	------------------------------------------------------------
+	-- Moves every panel row below yPos. Works on rows added by
+	-- other addon scripts too, since it only looks at positions.
+	local function shiftBelow(yPos, amount)
+
+		for _, child in ipairs(
+			hammerPanel:GetChildren()
+		) do
+
+			if child:IsA("GuiObject")
+				and child.Position.Y.Scale == 0
+				and child.Position.Y.Offset > yPos
+			then
+				local p = child.Position
+
+				child.Position =
+					UDim2.new(
+						p.X.Scale,
+						p.X.Offset,
+						0,
+						p.Y.Offset + amount
+					)
+			end
+		end
+	end
+
+	-- Header row in the same style as a toggle, but its box is
+	-- an arrow that opens the option rows underneath it.
+	-- Returns the frame the option rows go into and the "?".
+	local function makeDropdown(
+		name,
+		labelText,
+		yPos,
+		optionCount
+	)
+
+		local arrow, help =
+			makeToggle(
+				name,
+				labelText,
+				yPos,
+				false
+			)
+
+		local container = arrow.Parent
+
+		arrow.Name =
+			name .. "Arrow"
+
+		arrow.Text = "▼"
+		arrow.TextSize = 12
+
+		arrow.TextColor3 =
+			Color3.fromRGB(
+				255,
+				255,
+				255
+			)
+
+		local height =
+			optionCount * 30
+
+		local options =
+			Instance.new("Frame")
+
+		options.Name =
+			name .. "Options"
+
+		options.Size =
+			UDim2.new(1, 0, 0, height)
+
+		options.Position =
+			UDim2.new(0, 0, 0, 30)
+
+		options.BackgroundTransparency = 1
+		options.Visible = false
+		options.ZIndex = 96
+		options.Parent = container
+
+		local guide =
+			Instance.new("Frame")
+
+		guide.Name = "Guide"
+
+		guide.Size =
+			UDim2.new(0, 2, 1, -6)
+
+		guide.Position =
+			UDim2.new(0, 0, 0, 3)
+
+		guide.BackgroundColor3 =
+			Color3.fromRGB(
+				255,
+				255,
+				255
+			)
+
+		guide.BackgroundTransparency = 0.5
+		guide.BorderSizePixel = 0
+		guide.ZIndex = 97
+		guide.Parent = options
+
+		local expanded = false
+
+		arrow.MouseButton1Click:Connect(
+			function()
+
+				playClick()
+
+				expanded = not expanded
+
+				options.Visible = expanded
+				arrow.Text =
+					expanded and "▲" or "▼"
+
+				container.Size =
+					UDim2.new(
+						1,
+						-30,
+						0,
+						expanded
+							and 30 + height
+							or 30
+					)
+
+				shiftBelow(
+					container.Position.Y.Offset,
+					expanded and height or -height
+				)
+			end
+		)
+
+		return options, help
+	end
+
+	------------------------------------------------------------
 	-- CREATE ADDON BUTTONS
 	------------------------------------------------------------
 	local sky2013CB, sky2013Help =
@@ -1727,35 +1992,55 @@ task.spawn(function()
 			isRemoveLightingEnabled
 		)
 
+	local materialsOptions, materialsHelp =
+		makeDropdown(
+			"MaterialsDropdown",
+			"materials",
+			200,
+			4
+		)
+
 	local spCB, spHelp =
 		makeToggle(
 			"SmoothPlastic",
 			"smooth plastic",
-			200,
-			isSmoothPlasticEnabled
+			0,
+			isSmoothPlasticEnabled,
+			materialsOptions
+		)
+
+	local plCB, plHelp =
+		makeToggle(
+			"Plastic",
+			"plastic",
+			30,
+			isPlasticEnabled,
+			materialsOptions
 		)
 
 	local m09CB, m09Help =
 		makeToggle(
 			"Materials2009",
 			"2009 materials",
-			240,
-			is2009MaterialsEnabled
+			60,
+			is2009MaterialsEnabled,
+			materialsOptions
 		)
 
 	local lmCB, lmHelp =
 		makeToggle(
 			"LegacyMaterials",
 			"legacy materials",
-			280,
-			isLegacyMaterialsEnabled
+			90,
+			isLegacyMaterialsEnabled,
+			materialsOptions
 		)
 
 	local shCB, shHelp =
 		makeToggle(
 			"NoShadows",
 			"no shadows",
-			320,
+			240,
 			isNoShadowsEnabled
 		)
 
@@ -1772,7 +2057,7 @@ task.spawn(function()
 		UDim2.new(1, -30, 0, 36)
 
 	destroyBtn.Position =
-		UDim2.new(0, 15, 0, 360)
+		UDim2.new(0, 15, 0, 280)
 
 	destroyBtn.BackgroundColor3 =
 		Color3.fromRGB(
@@ -1846,7 +2131,7 @@ task.spawn(function()
 		UDim2.new(0, 1, 0, 30)
 
 	bottomSpacer.Position =
-		UDim2.new(0, 0, 0, 400)
+		UDim2.new(0, 0, 0, 320)
 
 	bottomSpacer.BackgroundTransparency = 1
 	bottomSpacer.BorderSizePixel = 0
@@ -1865,7 +2150,9 @@ task.spawn(function()
 				"New2010Container",
 				"Skybox2013Container",
 				"RemoveLightingContainer",
+				"MaterialsDropdownContainer",
 				"SmoothPlasticContainer",
+				"PlasticContainer",
 				"Materials2009Container",
 				"LegacyMaterialsContainer",
 				"NoShadowsContainer",
@@ -2001,7 +2288,19 @@ task.spawn(function()
 				isSmoothPlasticEnabled = true
 				spCB.Text = "✓"
 
+				-- Plastic and smooth plastic can't both be on.
+				local wasPlastic = isPlasticEnabled
+
+				if wasPlastic then
+					isPlasticEnabled = false
+					plCB.Text = ""
+					config.isPlasticEnabled = false
+				end
+
 				task.spawn(function()
+					if wasPlastic then
+						pcall(restorePlastic)
+					end
 					pcall(applySmooth)
 				end)
 
@@ -2017,6 +2316,51 @@ task.spawn(function()
 
 			config.isSmoothPlasticEnabled =
 				isSmoothPlasticEnabled
+
+			saveConfig()
+		end
+	)
+
+	------------------------------------------------------------
+	-- PLASTIC BUTTON
+	------------------------------------------------------------
+	plCB.MouseButton1Click:Connect(
+		function()
+
+			playClick()
+
+			if not isPlasticEnabled then
+
+				isPlasticEnabled = true
+				plCB.Text = "✓"
+
+				local wasSmooth = isSmoothPlasticEnabled
+
+				if wasSmooth then
+					isSmoothPlasticEnabled = false
+					spCB.Text = ""
+					config.isSmoothPlasticEnabled = false
+				end
+
+				task.spawn(function()
+					if wasSmooth then
+						pcall(restoreSmooth)
+					end
+					pcall(applyPlastic)
+				end)
+
+			else
+
+				isPlasticEnabled = false
+				plCB.Text = ""
+
+				task.spawn(function()
+					pcall(restorePlastic)
+				end)
+			end
+
+			config.isPlasticEnabled =
+				isPlasticEnabled
 
 			saveConfig()
 		end
@@ -2246,11 +2590,29 @@ task.spawn(function()
 		end
 	)
 
+	materialsHelp.MouseButton1Click:Connect(
+		function()
+			playClick()
+			showHelp(
+				"Press the arrow to open the material options: smooth plastic, plastic, 2009 materials and legacy materials."
+			)
+		end
+	)
+
 	spHelp.MouseButton1Click:Connect(
 		function()
 			playClick()
 			showHelp(
-				"Changes normal Plastic parts to SmoothPlastic."
+				"Changes normal Plastic parts to SmoothPlastic. Turns off plastic."
+			)
+		end
+	)
+
+	plHelp.MouseButton1Click:Connect(
+		function()
+			playClick()
+			showHelp(
+				"Sets every part's material to SmoothPlastic, including new parts. Disabling restores the original materials. Turns off smooth plastic."
 			)
 		end
 	)
@@ -2299,6 +2661,8 @@ task.spawn(function()
 
 		if isSmoothPlasticEnabled then
 			pcall(applySmooth)
+		elseif isPlasticEnabled then
+			pcall(applyPlastic)
 		end
 
 		if is2009MaterialsEnabled then
@@ -2322,6 +2686,7 @@ task.spawn(function()
 	print("[Bloxy Paradox] 2013 Skybox:", isSkybox2013Enabled)
 	print("[Bloxy Paradox] Remove Lighting:", isRemoveLightingEnabled)
 	print("[Bloxy Paradox] Smooth Plastic:", isSmoothPlasticEnabled)
+	print("[Bloxy Paradox] Plastic:", isPlasticEnabled)
 	print("[Bloxy Paradox] 2009 Materials:", is2009MaterialsEnabled)
 	print("[Bloxy Paradox] Legacy Materials:", isLegacyMaterialsEnabled)
 	print("[Bloxy Paradox] No Shadows:", isNoShadowsEnabled)

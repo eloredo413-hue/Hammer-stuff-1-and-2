@@ -1,4 +1,5 @@
--- [[ HEALTH ESP + REMOVE PRO + CLASSIC OUTLINE + LENS FLARE + OLD AVATAR + CLASSIC FACE ]]
+-- [[ HEALTH ESP + REMOVE PRO + CLASSIC OUTLINE + LENS FLARE + AVATAR DROPDOWN (OLD / 2006)
+--    + CLASSIC FACE + COLOR LIMITER DROPDOWN (2012 / 2006 / 2005) + OLD DECAL RENDERING BUTTON ]]
 
 task.spawn(function()
 	local HttpService = game:GetService("HttpService")
@@ -50,15 +51,17 @@ task.spawn(function()
 		isLensFlareEnabled   = config.isLensFlareEnabled or false,
 		isOldAvatarEnabled   = config.isOldAvatarEnabled or false,
 		isClassicFaceEnabled = config.isClassicFaceEnabled or false,
+		is2006AvatarEnabled  = config.is2006AvatarEnabled or false,
+		is2012ColorsEnabled  = config.is2012ColorsEnabled or false,
+		is2006ColorsEnabled  = config.is2006ColorsEnabled or false,
+		is2005ColorsEnabled  = config.is2005ColorsEnabled or false,
+		isOldDecalEnabled    = config.isOldDecalEnabled or false,
 	}
 
 	local function saveConfig()
-		config.isHealthESPEnabled   = state.isHealthESPEnabled
-		config.isRemoveProEnabled   = state.isRemoveProEnabled
-		config.isOutlineEnabled     = state.isOutlineEnabled
-		config.isLensFlareEnabled   = state.isLensFlareEnabled
-		config.isOldAvatarEnabled   = state.isOldAvatarEnabled
-		config.isClassicFaceEnabled = state.isClassicFaceEnabled
+		for key, value in pairs(state) do
+			config[key] = value
+		end
 		if writefile then
 			pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(config)) end)
 		end
@@ -1439,6 +1442,1482 @@ task.spawn(function()
 	end
 
 	------------------------------------------------------------
+	-- 7. COLOR LIMITER LOGIC (2012 / 2006 / 2005 COLORS)
+	------------------------------------------------------------
+	do
+		-- 64 solid colors, row by row from the 2012 8x8 palette grid
+		local PALETTE_2012_IDS = {
+			119, 24, 106, 21, 104, 23, 107, 37,
+			1, 208, 2, 194, 199, 26, 141, 1003,
+			1022, 133, 125, 153, 148, 135, 102, 151,
+			5, 226, 12, 101, 9, 11, 1018, 29,
+			1030, 1009, 1016, 1019, 1015, 1024, 1027, 1028,
+			1021, 1004, 1005, 1020, 1032, 1010, 1013, 1006,
+			217, 18, 38, 1007, 1026, 45, 1025, 1023,
+			192, 1014, 1008, 1031, 1012, 1011, 28, 1029
+		}
+
+		-- 31 core 2006 BrickColors
+		local PALETTE_2006_IDS = {
+			1, 2, 3, 5, 6, 9, 11, 12, 18, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+			36, 37, 38, 45, 47, 104, 106, 107, 119, 125, 194, 199, 200
+		}
+
+		-- 20 colors from the 2005 Studio toolbar. true = exact 2005 RGB colors,
+		-- false = snap to the closest BrickColor equivalents instead.
+		local USE_EXACT_2005_RGB = true
+
+		local PALETTE_2005_RGB = {
+			Color3.fromRGB(255, 255, 0),   Color3.fromRGB(0, 0, 255),     Color3.fromRGB(238, 236, 218),
+			Color3.fromRGB(118, 113, 36),  Color3.fromRGB(0, 168, 0),     Color3.fromRGB(205, 208, 48),
+			Color3.fromRGB(0, 240, 202),   Color3.fromRGB(108, 123, 182), Color3.fromRGB(128, 18, 179),
+			Color3.fromRGB(220, 68, 68),   Color3.fromRGB(245, 0, 0),     Color3.fromRGB(178, 178, 178),
+			Color3.fromRGB(125, 125, 125), Color3.fromRGB(255, 134, 0),   Color3.fromRGB(172, 198, 226),
+			Color3.fromRGB(70, 70, 70),    Color3.fromRGB(204, 204, 204), Color3.fromRGB(62, 206, 238),
+			Color3.fromRGB(106, 230, 0),   Color3.fromRGB(0, 88, 224),
+		}
+
+		local PALETTE_2005_BRICKCOLOR_IDS = {
+			24, 23, 1, 108, 28, 119, 107, 102, 104, 101,
+			21, 2, 27, 106, 45, 199, 194, 11, 37, 195
+		}
+
+		local function colorKey(c)
+			return string.format("%d,%d,%d", math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255))
+		end
+
+		local function isCharacterPart(part)
+			local current = part.Parent
+			while current and current ~= workspace do
+				if current:IsA("Model") and Players:GetPlayerFromCharacter(current) then
+					return true
+				end
+				current = current.Parent
+			end
+			return false
+		end
+
+		-- Builds an apply/restore pair that keeps every non-character part on the
+		-- nearest palette color. It re-checks every frame so BTool/executor color
+		-- changes get forced back, and restore puts the original colors back.
+		local function makeColorLimiter(tag, palette, useExactRGB)
+			local colorCache = {}
+			local validSet = {}
+
+			for _, entry in ipairs(palette) do
+				if useExactRGB then
+					validSet[colorKey(entry)] = true
+					table.insert(colorCache, { Color = entry, R = entry.R, G = entry.G, B = entry.B })
+				else
+					local bc = BrickColor.new(entry)
+					validSet[bc.Number] = true
+					table.insert(colorCache, { BrickColor = bc, R = bc.Color.R, G = bc.Color.G, B = bc.Color.B })
+				end
+			end
+
+			local lim = {
+				active = false,
+				isUpdating = false,
+				connections = {},
+				original = setmetatable({}, { __mode = "k" }),
+			}
+
+			local function isValidColor(part)
+				if useExactRGB then
+					return validSet[colorKey(part.Color)] == true
+				end
+				return validSet[part.BrickColor.Number] == true
+			end
+
+			local function getClosest(c)
+				local closest = colorCache[1]
+				local minDistSq = math.huge
+				local tr, tg, tb = c.R, c.G, c.B
+				for i = 1, #colorCache do
+					local entry = colorCache[i]
+					local dr, dg, db = tr - entry.R, tg - entry.G, tb - entry.B
+					local distSq = dr * dr + dg * dg + db * db
+					if distSq < minDistSq then minDistSq = distSq; closest = entry end
+				end
+				return closest
+			end
+
+			local function snapPart(part)
+				if lim.isUpdating or not lim.active then return end
+				if not part:IsA("BasePart") or isCharacterPart(part) then return end
+				if isValidColor(part) then return end
+
+				lim.isUpdating = true
+				if lim.original[part] == nil then lim.original[part] = part.Color end
+				local match = getClosest(part.Color)
+				pcall(function()
+					if useExactRGB then
+						part.Color = match.Color
+					else
+						part.BrickColor = match.BrickColor
+					end
+				end)
+				lim.isUpdating = false
+			end
+
+			local function apply()
+				if lim.active then return end
+				lim.active = true
+
+				table.insert(lim.connections, RunService.Stepped:Connect(function()
+					if lim.isUpdating then return end
+					for _, desc in ipairs(workspace:GetDescendants()) do
+						if desc:IsA("BasePart") and not isValidColor(desc) then
+							snapPart(desc)
+						end
+					end
+				end))
+
+				table.insert(lim.connections, workspace.DescendantAdded:Connect(function(desc)
+					if desc:IsA("BasePart") then snapPart(desc) end
+				end))
+				print("[" .. tag .. "] Enabled.")
+			end
+
+			local function restore()
+				if not lim.active then return end
+				lim.active = false
+
+				for _, conn in ipairs(lim.connections) do
+					pcall(function() conn:Disconnect() end)
+				end
+				lim.connections = {}
+
+				for part, color in pairs(lim.original) do
+					if part.Parent then
+						pcall(function() part.Color = color end)
+					end
+				end
+				lim.original = setmetatable({}, { __mode = "k" })
+				print("[" .. tag .. "] Disabled, original colors restored.")
+			end
+
+			return apply, restore
+		end
+
+		actions.apply2012Colors, actions.restore2012Colors =
+			makeColorLimiter("2012 Colors", PALETTE_2012_IDS, false)
+		actions.apply2006Colors, actions.restore2006Colors =
+			makeColorLimiter("2006 Colors", PALETTE_2006_IDS, false)
+		actions.apply2005Colors, actions.restore2005Colors =
+			makeColorLimiter("2005 Colors", USE_EXACT_2005_RGB and PALETTE_2005_RGB or PALETTE_2005_BRICKCOLOR_IDS, USE_EXACT_2005_RGB)
+	end
+
+	------------------------------------------------------------
+	-- 8. 2006 AVATAR (RETRO SUITE 2006 EXECUTOR EDITION) LOGIC
+	------------------------------------------------------------
+	do
+		local BODY_ASSET_ID    = "rbxassetid://1112295249"
+		local HEAD_ASSET_ID    = "rbxassetid://12723461139"
+		local TSHIRT_ASSET_ID  = "rbxassetid://6526314520"
+		local RAW_TSHIRT_IMAGE = "rbxassetid://6526314494"
+		local CLASSIC_FACE_ID  = "rbxasset://textures/face.png"
+		local ENFORCE_INTERVAL = 0.75
+
+		local MOVEMENT_CATALOG_IDS = {
+			Idle  = "rbxassetid://107407916979702",
+			Walk  = "rbxassetid://103979922296239",
+			Run   = "rbxassetid://103979922296239",
+			Jump  = "rbxassetid://119095524735341",
+			Fall  = "rbxassetid://119095524735341",
+			Climb = "rbxassetid://132639392250396",
+		}
+
+		local AVATAR_PALETTES = {
+			{ Head = Color3.fromRGB(245,205,48),  Torso = Color3.fromRGB(163,162,165), LeftArm = Color3.fromRGB(245,205,48),  RightArm = Color3.fromRGB(245,205,48),  LeftLeg = Color3.fromRGB(164,189,71), RightLeg = Color3.fromRGB(164,189,71) },
+			{ Head = Color3.fromRGB(245,205,48),  Torso = Color3.fromRGB(224,152,147), LeftArm = Color3.fromRGB(245,205,48),  RightArm = Color3.fromRGB(245,205,48),  LeftLeg = Color3.fromRGB(224,152,147), RightLeg = Color3.fromRGB(224,152,147) },
+			{ Head = Color3.fromRGB(245,205,48),  Torso = Color3.fromRGB(13,105,172),  LeftArm = Color3.fromRGB(245,205,48),  RightArm = Color3.fromRGB(245,205,48),  LeftLeg = Color3.fromRGB(164,189,71), RightLeg = Color3.fromRGB(164,189,71) },
+			{ Head = Color3.fromRGB(245,205,48),  Torso = Color3.fromRGB(217,122,114), LeftArm = Color3.fromRGB(245,205,48),  RightArm = Color3.fromRGB(245,205,48),  LeftLeg = Color3.fromRGB(164,189,71), RightLeg = Color3.fromRGB(164,189,71) },
+			{ Head = Color3.fromRGB(245,205,48),  Torso = Color3.fromRGB(116,180,222), LeftArm = Color3.fromRGB(245,205,48),  RightArm = Color3.fromRGB(245,205,48),  LeftLeg = Color3.fromRGB(164,189,71), RightLeg = Color3.fromRGB(164,189,71) },
+			{ Head = Color3.fromRGB(218,133,65),  Torso = Color3.fromRGB(163,162,165), LeftArm = Color3.fromRGB(218,133,65),  RightArm = Color3.fromRGB(218,133,65),  LeftLeg = Color3.fromRGB(164,189,71), RightLeg = Color3.fromRGB(164,189,71) },
+			{ Head = Color3.fromRGB(204,142,105), Torso = Color3.fromRGB(164,189,71),  LeftArm = Color3.fromRGB(204,142,105), RightArm = Color3.fromRGB(204,142,105), LeftLeg = Color3.fromRGB(164,189,71), RightLeg = Color3.fromRGB(164,189,71) },
+		}
+
+		local rng = Random.new()
+
+		local avState = {
+			active = false,
+			cleanup = {},
+			players = {},
+			palettes = {},
+			assetsLoaded = false,
+			assetsLoading = false,
+			headModel = nil,
+			bodyModel = nil,
+			tshirtGraphic = RAW_TSHIRT_IMAGE,
+			movementIds = {},
+		}
+
+		local function now()
+			return (tick and tick()) or os.clock()
+		end
+
+		local function safeGetObjects(id)
+			local ok, result = pcall(function() return game:GetObjects(id) end)
+			if ok and type(result) == "table" and #result > 0 then return result end
+			return nil
+		end
+
+		local function getPaletteForPlayer(plr)
+			if not avState.palettes[plr] then
+				avState.palettes[plr] = AVATAR_PALETTES[rng:NextInteger(1, #AVATAR_PALETTES)]
+			end
+			return avState.palettes[plr]
+		end
+
+		-- Assets only need loading once; later toggles reuse them.
+		local function loadAssets()
+			if avState.assetsLoaded or avState.assetsLoading then return end
+			avState.assetsLoading = true
+
+			local hObjs = safeGetObjects(HEAD_ASSET_ID)
+			if hObjs then avState.headModel = hObjs[1] end
+
+			local bObjs = safeGetObjects(BODY_ASSET_ID)
+			if bObjs then avState.bodyModel = bObjs[1] end
+
+			local tObjs = safeGetObjects(TSHIRT_ASSET_ID)
+			local template = tObjs and tObjs[1]
+			if template then
+				if template:IsA("ShirtGraphic") and template.Graphic ~= "" then
+					avState.tshirtGraphic = template.Graphic
+				else
+					local g = template:FindFirstChildWhichIsA("ShirtGraphic", true)
+					if g and g.Graphic ~= "" then avState.tshirtGraphic = g.Graphic end
+				end
+			end
+
+			for name, catalogId in pairs(MOVEMENT_CATALOG_IDS) do
+				avState.movementIds[name] = catalogId
+				local objs = safeGetObjects(catalogId)
+				if objs then
+					for _, obj in ipairs(objs) do
+						if obj:IsA("Animation") then
+							avState.movementIds[name] = obj.AnimationId
+						else
+							local anim = obj:FindFirstChildWhichIsA("Animation", true)
+							if anim then avState.movementIds[name] = anim.AnimationId end
+						end
+					end
+				end
+			end
+
+			avState.assetsLoaded = true
+			avState.assetsLoading = false
+			print("[2006 Avatar] Assets loaded.")
+		end
+
+		local function setupCustomAudio(character, isCurrent)
+			local humanoid = character:WaitForChild("Humanoid", 8)
+			local rPart    = character:WaitForChild("HumanoidRootPart", 8)
+			if not (humanoid and rPart) or not isCurrent() then return end
+
+			local defaultSounds = character:FindFirstChild("RbxCharacterSounds")
+			if defaultSounds then pcall(function() defaultSounds:Destroy() end) end
+
+			for _, child in ipairs(rPart:GetChildren()) do
+				if child:IsA("Sound") then pcall(function() child:Stop() child:Destroy() end) end
+			end
+
+			local sounds = {
+				FallingDown = Instance.new("Sound"), FreeFall = Instance.new("Sound"),
+				GettingUp   = Instance.new("Sound"), Running  = Instance.new("Sound"),
+				Jumping     = Instance.new("Sound"),
+			}
+
+			sounds.FallingDown.SoundId = "rbxasset://sounds/splat.wav"
+			sounds.FreeFall.SoundId    = "rbxassetid://12222200"
+			sounds.GettingUp.SoundId   = "rbxasset://sounds/hit.wav"
+			sounds.Running.SoundId     = "rbxasset://sounds/bfsl-minifigfoots1.mp3"
+			sounds.Running.Looped      = true
+			sounds.Jumping.SoundId     = "rbxasset://sounds/button.wav"
+
+			for name, s in pairs(sounds) do
+				s.Name = "Custom_" .. name; s.Volume = 1; s.RollOffMaxDistance = 100; s.RollOffMinDistance = 10; s.Parent = rPart
+			end
+
+			local conns = {}
+			table.insert(conns, humanoid.FallingDown:Connect(function(a)
+				if not sounds.FallingDown.Parent then return end
+				if a then sounds.FallingDown.TimePosition = 0; sounds.FallingDown:Play() else sounds.FallingDown:Stop() end
+			end))
+			table.insert(conns, humanoid.FreeFalling:Connect(function(a)
+				if not sounds.FreeFall.Parent then return end
+				if a then sounds.FreeFall.TimePosition = 0; sounds.FreeFall:Play() else sounds.FreeFall:Stop() end
+			end))
+			table.insert(conns, humanoid.Jumping:Connect(function()
+				if not sounds.Jumping.Parent then return end
+				sounds.Jumping.TimePosition = 0
+				sounds.Jumping:Play()
+				task.delay(0.1 + rng:NextNumber() / 10, function()
+					if sounds.Jumping.Parent and sounds.Jumping.IsPlaying then sounds.Jumping:Stop() end
+				end)
+			end))
+			table.insert(conns, humanoid.GettingUp:Connect(function()
+				if not sounds.GettingUp.Parent then return end
+				sounds.GettingUp.TimePosition = 0
+				sounds.GettingUp:Play()
+			end))
+
+			local hb
+			hb = RunService.Heartbeat:Connect(function()
+				if not character.Parent or not humanoid.Parent or humanoid.Health <= 0 or not rPart.Parent then
+					hb:Disconnect(); return
+				end
+				local vel = (rPart.Velocity * Vector3.new(1,0,1)).Magnitude
+				if humanoid:GetState() == Enum.HumanoidStateType.Running and vel > 0.5 then
+					if not sounds.Running.IsPlaying then sounds.Running:Play() end
+				else
+					if sounds.Running.IsPlaying then sounds.Running:Stop() end
+				end
+			end)
+			table.insert(conns, hb)
+
+			return conns
+		end
+
+		local function isForbiddenItem(item)
+			if not item or not item.Parent then return false end
+			if item:IsA("Accessory") or item:IsA("Accoutrement")
+				or item:IsA("Shirt") or item:IsA("Pants")
+				or item:IsA("ForceField") or item:IsA("WrapTarget")
+				or item:IsA("WrapLayer") or item:IsA("Clothing")
+				or item:IsA("SurfaceAppearance") or item:IsA("ShirtGraphic") then
+				return true
+			end
+			if item:IsA("CharacterMesh") and item.Name ~= "RetroSharpMesh" then return true end
+			if item:IsA("BlockMesh") then return true end
+			return false
+		end
+
+		local function enforceClassicFace(character)
+			local head = character:FindFirstChild("Head")
+			if not head then return end
+
+			for _, child in ipairs(head:GetChildren()) do
+				if child:IsA("FaceControls") or child:IsA("SurfaceAppearance") or child:IsA("WrapTarget") then
+					pcall(function() child:Destroy() end)
+				end
+			end
+
+			local face = head:FindFirstChild("face")
+			if not face then
+				face = Instance.new("Decal")
+				face.Name = "face"
+				face.Face = Enum.NormalId.Front
+				face.Parent = head
+			end
+			if face.Texture ~= CLASSIC_FACE_ID then face.Texture = CLASSIC_FACE_ID end
+			face.Transparency = 0
+
+			for _, child in ipairs(head:GetChildren()) do
+				if child:IsA("Decal") and child ~= face then
+					pcall(function() child:Destroy() end)
+				end
+			end
+		end
+
+		local function purgeUnwantedItems(character)
+			if not character or not character.Parent then return end
+
+			for _, child in ipairs(character:GetChildren()) do
+				if isForbiddenItem(child) then pcall(function() child:Destroy() end) end
+			end
+			for _, part in ipairs(character:GetChildren()) do
+				if part:IsA("BasePart") then
+					for _, child in ipairs(part:GetChildren()) do
+						if isForbiddenItem(child) then pcall(function() child:Destroy() end) end
+					end
+				end
+			end
+
+			enforceClassicFace(character)
+		end
+
+		local function applyFullRetroAvatar(character, palette)
+			if not character or not character.Parent or not palette then return end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if not humanoid then return end
+
+			purgeUnwantedItems(character)
+
+			if humanoid.RigType == Enum.HumanoidRigType.R6 and avState.bodyModel then
+				for _, desc in ipairs(avState.bodyModel:GetDescendants()) do
+					if desc:IsA("CharacterMesh") then
+						local exists = false
+						for _, existing in ipairs(character:GetChildren()) do
+							if existing:IsA("CharacterMesh") and existing.MeshId == desc.MeshId then exists = true; break end
+						end
+						if not exists then
+							local clone = desc:Clone(); clone.Name = "RetroSharpMesh"; clone.Parent = character
+						end
+					end
+				end
+			end
+
+			local head = character:FindFirstChild("Head")
+			if head then
+				for _, item in ipairs(head:GetChildren()) do
+					if item:IsA("SpecialMesh") or item:IsA("FaceControls")
+						or item:IsA("WrapTarget") or item:IsA("SurfaceAppearance") then
+						pcall(function() item:Destroy() end)
+					end
+				end
+
+				local newMesh = Instance.new("SpecialMesh")
+				if avState.headModel then
+					local foundMesh = avState.headModel:FindFirstChildWhichIsA("SpecialMesh", true)
+									  or avState.headModel:FindFirstChildWhichIsA("MeshPart", true)
+					if foundMesh and foundMesh:IsA("MeshPart") then
+						newMesh.MeshType  = Enum.MeshType.FileMesh
+						newMesh.MeshId    = foundMesh.MeshId
+						newMesh.TextureId = foundMesh.TextureID
+					elseif foundMesh then
+						newMesh = foundMesh:Clone()
+					end
+				else
+					newMesh.MeshType = Enum.MeshType.Head
+				end
+				newMesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+				newMesh.Parent = head
+			end
+
+			enforceClassicFace(character)
+
+			local bc = character:FindFirstChildOfClass("BodyColors")
+			if not bc then bc = Instance.new("BodyColors"); bc.Parent = character end
+			bc.HeadColor3     = palette.Head
+			bc.TorsoColor3    = palette.Torso
+			bc.LeftArmColor3  = palette.LeftArm
+			bc.RightArmColor3 = palette.RightArm
+			bc.LeftLegColor3  = palette.LeftLeg
+			bc.RightLegColor3 = palette.RightLeg
+
+			local limbColors = {
+				["Head"] = palette.Head, ["Torso"] = palette.Torso,
+				["Left Arm"] = palette.LeftArm, ["Right Arm"] = palette.RightArm,
+				["Left Leg"] = palette.LeftLeg, ["Right Leg"] = palette.RightLeg,
+			}
+
+			for _, part in ipairs(character:GetDescendants()) do
+				if part:IsA("BasePart") then
+					part.Material = Enum.Material.SmoothPlastic
+					if limbColors[part.Name] then part.Color = limbColors[part.Name] end
+				end
+			end
+
+			-- Classic 2006 T-shirt badge: an upright SurfaceGui flush to the left chest,
+			-- since Decals get rotated 90 degrees by the RetroSharpMesh UVs.
+			local torso = character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
+			if torso then
+				for _, child in ipairs(torso:GetChildren()) do
+					if child:IsA("Decal") or (child:IsA("SurfaceGui") and child.Name ~= "Retro2006LogoGui") then
+						pcall(function() child:Destroy() end)
+					end
+				end
+
+				local logoGui = torso:FindFirstChild("Retro2006LogoGui")
+				if not logoGui then
+					logoGui = Instance.new("SurfaceGui")
+					logoGui.Name = "Retro2006LogoGui"
+					logoGui.Face = Enum.NormalId.Front
+					logoGui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+					logoGui.PixelsPerStud = 100
+					logoGui.LightInfluence = 1
+					logoGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+					local img = Instance.new("ImageLabel")
+					img.Name = "Badge"
+					img.BackgroundTransparency = 1
+					img.Size = UDim2.new(1, 0, 1, 0)
+					img.Position = UDim2.new(-0.015, 0, 0.045, 0)
+					img.ScaleType = Enum.ScaleType.Stretch
+					img.Image = avState.tshirtGraphic
+					img.Parent = logoGui
+
+					logoGui.Parent = torso
+				else
+					logoGui.MaxDistance = 0
+					local img = logoGui:FindFirstChild("Badge")
+					if img then
+						img.Size = UDim2.new(1, 0, 1, 0)
+						img.Position = UDim2.new(-0.015, 0, 0.045, 0)
+						if img.Image ~= avState.tshirtGraphic then img.Image = avState.tshirtGraphic end
+					end
+				end
+			end
+		end
+
+		local function injectClassicAnimations(character, charConns, isCurrent)
+			local humanoid = character:WaitForChild("Humanoid", 8)
+			if not humanoid then return end
+
+			local animator = humanoid:WaitForChild("Animator", 5)
+			if not isCurrent() then return end
+			if not animator then
+				animator = Instance.new("Animator")
+				animator.Parent = humanoid
+			end
+
+			local animateScript = character:FindFirstChild("Animate")
+			if animateScript and animateScript:IsA("LocalScript") then animateScript.Disabled = true end
+
+			table.insert(charConns, character.ChildAdded:Connect(function(child)
+				if child.Name == "Animate" and child:IsA("LocalScript") then
+					task.defer(function() child.Disabled = true end)
+				end
+			end))
+
+			local currentTrack, currentAnimId
+
+			local function playRetroAnim(animId, priority)
+				if not animId or not character.Parent or humanoid.Health <= 0 then return end
+				if currentAnimId == animId and currentTrack and currentTrack.IsPlaying then return end
+
+				if currentTrack then
+					pcall(function() currentTrack:Stop(0); currentTrack:Destroy() end)
+					currentTrack = nil
+				end
+
+				currentAnimId = animId
+				local animObj = Instance.new("Animation")
+				animObj.AnimationId = animId
+				local ok, track = pcall(function() return animator:LoadAnimation(animObj) end)
+				if ok and track then
+					currentTrack = track
+					currentTrack.Priority = priority or Enum.AnimationPriority.Action
+					pcall(function() currentTrack:Play(0) end)
+				end
+			end
+
+			local function stopDefaultTracks()
+				pcall(function()
+					for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+						if t ~= currentTrack then t:Stop(0) end
+					end
+				end)
+			end
+
+			stopDefaultTracks()
+
+			local ids = avState.movementIds
+			table.insert(charConns, animator.AnimationPlayed:Connect(function(track)
+				if track ~= currentTrack then pcall(function() track:Stop(0) end) end
+			end))
+			table.insert(charConns, humanoid.Running:Connect(function(speed)
+				stopDefaultTracks()
+				playRetroAnim(speed > 0.5 and ids.Walk or ids.Idle)
+			end))
+			table.insert(charConns, humanoid.Jumping:Connect(function()
+				stopDefaultTracks()
+				playRetroAnim(ids.Jump)
+			end))
+			table.insert(charConns, humanoid.FreeFalling:Connect(function()
+				stopDefaultTracks()
+				playRetroAnim(ids.Fall)
+			end))
+			table.insert(charConns, humanoid.Climbing:Connect(function(speed)
+				stopDefaultTracks()
+				playRetroAnim(ids.Climb)
+				if currentTrack then pcall(function() currentTrack:AdjustSpeed(speed / 10) end) end
+			end))
+
+			playRetroAnim(ids.Idle)
+		end
+
+		local function setupPlayer(targetPlayer)
+			if not avState.active or not targetPlayer or not targetPlayer.Parent then return end
+			if avState.players[targetPlayer] then return end
+
+			local entry = { charConns = {} }
+			function entry.cleanup()
+				for _, c in ipairs(entry.charConns) do
+					pcall(function() c:Disconnect() end)
+				end
+				entry.charConns = {}
+			end
+			avState.players[targetPlayer] = entry
+
+			local function onCharacter(character)
+				if not character or not avState.active then return end
+				entry.cleanup()
+
+				local charConns = entry.charConns
+				local palette = getPaletteForPlayer(targetPlayer)
+
+				-- Work that waits must not hook a character after a disable or respawn.
+				local function isCurrent()
+					return avState.active and avState.players[targetPlayer] == entry and entry.charConns == charConns
+				end
+
+				task.spawn(function()
+					local timeout = now() + 5
+					while not avState.assetsLoaded and now() < timeout do
+						task.wait(0.05)
+					end
+					character:WaitForChild("Head", 5)
+					character:WaitForChild("Humanoid", 5)
+					if not isCurrent() then return end
+
+					pcall(applyFullRetroAvatar, character, palette)
+					pcall(injectClassicAnimations, character, charConns, isCurrent)
+				end)
+
+				task.spawn(function()
+					local ok, conns = pcall(setupCustomAudio, character, isCurrent)
+					if ok and conns then
+						for _, c in ipairs(conns) do table.insert(charConns, c) end
+					end
+				end)
+
+				table.insert(charConns, character.ChildAdded:Connect(function(child)
+					if isForbiddenItem(child) or child:IsA("Decal") then
+						task.defer(function()
+							if character.Parent and isCurrent() then pcall(purgeUnwantedItems, character) end
+						end)
+					end
+				end))
+
+				table.insert(charConns, character.DescendantAdded:Connect(function(desc)
+					if isForbiddenItem(desc)
+						or (desc:IsA("Decal") and desc.Parent and desc.Parent.Name == "Head" and desc.Texture ~= CLASSIC_FACE_ID) then
+						task.defer(function()
+							if character.Parent and isCurrent() then pcall(purgeUnwantedItems, character) end
+						end)
+					end
+				end))
+
+				local lastEnforce = 0
+				table.insert(charConns, RunService.Heartbeat:Connect(function()
+					if not character.Parent then return end
+					local t = now()
+					if t - lastEnforce < ENFORCE_INTERVAL then return end
+					lastEnforce = t
+					pcall(applyFullRetroAvatar, character, palette)
+				end))
+			end
+
+			if targetPlayer.Character then onCharacter(targetPlayer.Character) end
+			table.insert(avState.cleanup, targetPlayer.CharacterAdded:Connect(onCharacter))
+			table.insert(avState.cleanup, targetPlayer.CharacterRemoving:Connect(entry.cleanup))
+		end
+
+		function actions.apply2006Avatar()
+			if avState.active then return end
+			avState.active = true
+
+			task.spawn(loadAssets)
+
+			for _, plr in ipairs(Players:GetPlayers()) do
+				pcall(setupPlayer, plr)
+			end
+			table.insert(avState.cleanup, Players.PlayerAdded:Connect(function(plr) pcall(setupPlayer, plr) end))
+			table.insert(avState.cleanup, Players.PlayerRemoving:Connect(function(plr)
+				avState.palettes[plr] = nil
+				local entry = avState.players[plr]
+				if entry then entry.cleanup(); avState.players[plr] = nil end
+			end))
+			print("[2006 Avatar] Retro Suite 2006 applied.")
+		end
+
+		function actions.restore2006Avatar()
+			if not avState.active then return end
+			avState.active = false
+
+			for _, c in ipairs(avState.cleanup) do
+				pcall(function() c:Disconnect() end)
+			end
+			table.clear(avState.cleanup)
+
+			for _, entry in pairs(avState.players) do entry.cleanup() end
+			table.clear(avState.players)
+			table.clear(avState.palettes)
+
+			for _, plr in ipairs(Players:GetPlayers()) do
+				local char = plr.Character
+				if char then
+					local humanoid = char:FindFirstChildOfClass("Humanoid")
+					local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+					if animator then
+						pcall(function()
+							for _, t in ipairs(animator:GetPlayingAnimationTracks()) do t:Stop(0) end
+						end)
+					end
+
+					local animate = char:FindFirstChild("Animate")
+					if animate then animate.Disabled = false end
+
+					local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+					local logo = torso and torso:FindFirstChild("Retro2006LogoGui")
+					if logo then pcall(function() logo:Destroy() end) end
+
+					local rPart = char:FindFirstChild("HumanoidRootPart")
+					if rPart then
+						for _, s in ipairs(rPart:GetChildren()) do
+							if s:IsA("Sound") and string.sub(s.Name, 1, 7) == "Custom_" then
+								pcall(function() s:Stop(); s:Destroy() end)
+							end
+						end
+					end
+				end
+			end
+			print("[2006 Avatar] Disabled. Respawn to get removed accessories and clothing back.")
+		end
+	end
+
+	------------------------------------------------------------
+	-- 9. OLD DECAL RENDERING LOGIC (v8)
+	-- Classic 2006-2011 decal, face and T-shirt rendering:
+	-- black 4-way outlines, pixelated filtering and flat PBR maps.
+	------------------------------------------------------------
+	do
+		local genv = (getgenv and getgenv()) or _G
+
+		local Config = {
+			-- "All": head decals, 2006 T-shirt GUIs and non-stud workspace decals
+			-- "CharactersOnly": only character head decals and torso T-shirts
+			TargetScope = "All",
+			-- Never touch studs, inlets, welds or tiling surface textures
+			IgnoreStudsAndSurfaceTextures = true,
+			-- Classic head & 3D decal outlines
+			EnableThickOutlines = true,
+			OutlineUVThickness = 0.0018,
+			AlphaCrushLayers = 2,
+			MainDecalTint = Color3.fromRGB(255, 255, 255),
+			-- 2006 T-shirt (Retro2006LogoGui -> Badge); LightInfluence 1 so it never glows
+			TShirtLightInfluence = 1,
+			TShirtOutlinePixelThickness = 1,
+			TShirtColorTint = Color3.fromRGB(255, 255, 255),
+			TShirtPixelatedFiltering = true,
+			-- Nearest-neighbor filtering and runtime PBR maps on 3D decals
+			PixelatedFiltering = true,
+			AttemptRuntimePBR = true,
+			FallbackWhiteAssetId = "rbxassetid://10800735854",
+			FallbackNormalAssetId = "rbxassetid://10800735854",
+		}
+
+		local ProcessedTag = "__OldRobloxDecalProcessed_v8"
+		local GeneratedTag = "__OldRobloxGenerated_v8"
+
+		local STUD_KEYWORDS = {
+			"stud", "inlet", "weld", "glue", "universal",
+			"surface", "tile", "grid", "plate", "baseplate",
+			"ground", "floor", "road", "grass", "sand", "brick", "concrete"
+		}
+
+		-- 1x1 PNGs for the PBR roughness (#FFFFFF) and normal (#7F7FFF) maps
+		local WHITE_PNG_BYTES =
+			"\137\80\78\71\13\10\26\10\0\0\0\13\73\72\68\82\0\0\0\1\0\0\0\1\8\6\0\0\0\31\21\196\137"
+			.. "\0\0\0\13\73\68\65\84\120\218\99\248\255\255\255\127\0\9\251\3\253\245\216\241\154"
+			.. "\0\0\0\0\73\69\78\68\174\66\96\130"
+
+		local NORMAL_PNG_BYTES =
+			"\137\80\78\71\13\10\26\10\0\0\0\13\73\72\68\82\0\0\0\1\0\0\0\1\8\6\0\0\0\31\21\196\137"
+			.. "\0\0\0\13\73\68\65\84\120\218\99\168\175\255\255\31\0\6\123\2\253\150\39\3\105"
+			.. "\0\0\0\0\73\69\78\68\174\66\96\130"
+
+		local odState = {
+			active = false,
+			overlay = nil,
+			pbrMaps = nil,
+		}
+
+		local TrackedDecals = {}
+		local TrackedSurfaceGuis = {}
+		local TrackedImageLabels = {}
+		local CreatedInstances = {}
+		local Connections = {}
+		local HeadShells = {}
+		local TShirtGuiStacks = {}
+
+		-- Executor thread identity is raised for restricted property access
+		local function elevateIdentity()
+			local setId = setthreadidentity or setidentity or (syn and syn.set_thread_identity)
+			if type(setId) == "function" then pcall(setId, 8) end
+		end
+
+		local function setRestrictedProperty(instance, prop, value)
+			elevateIdentity()
+			if type(setscriptable) == "function" then pcall(setscriptable, instance, prop, true) end
+			local ok = pcall(function() instance[prop] = value end)
+			if ok then return true end
+			if type(sethiddenproperty) == "function" then
+				local hiddenOk = pcall(sethiddenproperty, instance, prop, value)
+				if hiddenOk then return true end
+			end
+			return false
+		end
+
+		local function getRestrictedProperty(instance, prop)
+			elevateIdentity()
+			if type(setscriptable) == "function" then pcall(setscriptable, instance, prop, true) end
+			local ok, val = pcall(function() return instance[prop] end)
+			if ok and val ~= nil then return val end
+			if type(gethiddenproperty) == "function" then
+				local hiddenOk, hiddenVal = pcall(gethiddenproperty, instance, prop)
+				if hiddenOk then return hiddenVal end
+			end
+			return nil
+		end
+
+		local function buildPBRMaps()
+			local maps = {
+				WhiteUri = Config.FallbackWhiteAssetId,
+				NormalUri = Config.FallbackNormalAssetId,
+				WhiteContent = nil,
+				NormalContent = nil,
+			}
+
+			local customAssetFunc = getcustomasset or getsynasset
+			if type(writefile) == "function" and type(customAssetFunc) == "function" then
+				pcall(function()
+					local whiteFile = "old_roblox_decal_white_1x1.png"
+					local normalFile = "old_roblox_decal_normal_1x1.png"
+					writefile(whiteFile, WHITE_PNG_BYTES)
+					writefile(normalFile, NORMAL_PNG_BYTES)
+					maps.WhiteUri = customAssetFunc(whiteFile)
+					maps.NormalUri = customAssetFunc(normalFile)
+				end)
+			end
+
+			if type(Content) == "table" and type(Content.fromUri) == "function" then
+				pcall(function()
+					maps.WhiteContent = Content.fromUri(maps.WhiteUri)
+					maps.NormalContent = Content.fromUri(maps.NormalUri)
+				end)
+			end
+
+			return maps
+		end
+
+		local function markGenerated(inst)
+			pcall(function() inst:SetAttribute(GeneratedTag, true) end)
+			table.insert(CreatedInstances, inst)
+		end
+
+		local function isGenerated(inst)
+			local ok, val = pcall(function() return inst:GetAttribute(GeneratedTag) == true end)
+			return ok and val
+		end
+
+		local function getDecalTextureUri(decal)
+			local tex = decal.Texture
+			if type(tex) == "string" and tex ~= "" then return tex end
+			local colorMap = getRestrictedProperty(decal, "ColorMap")
+			if type(colorMap) == "string" and colorMap ~= "" then return colorMap end
+			local texContent = getRestrictedProperty(decal, "TextureContent")
+			if texContent and typeof(texContent) == "Content" and texContent.Uri and texContent.Uri ~= "" then
+				return texContent.Uri
+			end
+			local colorMapContent = getRestrictedProperty(decal, "ColorMapContent")
+			if colorMapContent and typeof(colorMapContent) == "Content" and colorMapContent.Uri and colorMapContent.Uri ~= "" then
+				return colorMapContent.Uri
+			end
+			return ""
+		end
+
+		-- Detects studs, inlets, welds and tiling surface textures so floors and
+		-- building bricks are never outlined with black borders.
+		local function isStudOrSurfaceDecal(decal)
+			if not Config.IgnoreStudsAndSurfaceTextures then return false end
+
+			-- Every Texture tiles across a surface, so it's never a single decal
+			if decal:IsA("Texture") then return true end
+			if not decal:IsA("Decal") then return false end
+
+			-- Never ignore character head decals
+			local parentPart = decal.Parent
+			if parentPart and parentPart:IsA("BasePart") and parentPart.Name == "Head" then return false end
+
+			local name = string.lower(decal.Name)
+			for _, kw in ipairs(STUD_KEYWORDS) do
+				if string.find(name, kw, 1, true) then return true end
+			end
+
+			local texUri = string.lower(getDecalTextureUri(decal))
+			if string.find(texUri, "textures/", 1, true) and not string.find(texUri, "face", 1, true) then return true end
+			for _, kw in ipairs(STUD_KEYWORDS) do
+				if string.find(texUri, kw, 1, true) then return true end
+			end
+
+			if parentPart and parentPart:IsA("BasePart") then
+				local pName = string.lower(parentPart.Name)
+				for _, kw in ipairs(STUD_KEYWORDS) do
+					if string.find(pName, kw, 1, true) then return true end
+				end
+
+				local model = parentPart.Parent
+				if model and model:IsA("Model") then
+					local mName = string.lower(model.Name)
+					if string.find(mName, "stud", 1, true)
+						or string.find(mName, "floor", 1, true)
+						or string.find(mName, "baseplate", 1, true) then
+						return true
+					end
+				end
+
+				-- The same texture on 2+ faces of one part means it's a surface texture
+				local targetUri = getDecalTextureUri(decal)
+				if targetUri ~= "" then
+					local sameTexCount = 0
+					for _, sibling in ipairs(parentPart:GetChildren()) do
+						if sibling:IsA("Decal") and not isGenerated(sibling) and getDecalTextureUri(sibling) == targetUri then
+							sameTexCount += 1
+						end
+					end
+					if sameTexCount >= 2 then return true end
+				end
+			end
+
+			return false
+		end
+
+		local function applyPBRPropertiesToDecal(decal, texUri)
+			if not Config.AttemptRuntimePBR or texUri == "" then return end
+			local maps = odState.pbrMaps
+			setRestrictedProperty(decal, "ColorMap", texUri)
+			if type(Content) == "table" and type(Content.fromUri) == "function" then
+				pcall(function()
+					local c = Content.fromUri(texUri)
+					setRestrictedProperty(decal, "ColorMapContent", c)
+					setRestrictedProperty(decal, "TextureContent", c)
+				end)
+			end
+			setRestrictedProperty(decal, "NormalMap", maps.NormalUri)
+			if maps.NormalContent then setRestrictedProperty(decal, "NormalMapContent", maps.NormalContent) end
+			setRestrictedProperty(decal, "RoughnessMap", maps.WhiteUri)
+			if maps.WhiteContent then setRestrictedProperty(decal, "RoughnessMapContent", maps.WhiteContent) end
+		end
+
+		-- Builds the classic layer stack (4 black outlines, alpha crush, main) on a part
+		local function createDecalStackOnPart(sourceDecal, targetParent)
+			local stack = {}
+			local texUri = getDecalTextureUri(sourceDecal)
+
+			local function makeLayer(suffix, uvOffset, zIndex, color, trans)
+				local d = Instance.new("Decal")
+				markGenerated(d)
+				d.Name = sourceDecal.Name .. suffix
+				d.Face = sourceDecal.Face
+				d.Texture = texUri
+				d.Color3 = color
+				d.Transparency = trans
+				d.ZIndex = zIndex
+				pcall(function()
+					d.UVOffset = uvOffset
+					d.UVScale = sourceDecal.UVScale
+					d.Rotation = sourceDecal.Rotation
+				end)
+				if Config.PixelatedFiltering then
+					setRestrictedProperty(d, "ResampleMode", Enum.ResamplerMode.Pixelated)
+				end
+				applyPBRPropertiesToDecal(d, texUri)
+				d.Parent = targetParent
+				table.insert(stack, d)
+				return d
+			end
+
+			local baseZ = math.max(sourceDecal.ZIndex, 2)
+			local baseOffset = Vector2.zero
+			pcall(function() baseOffset = sourceDecal.UVOffset end)
+
+			if Config.EnableThickOutlines then
+				local off = Config.OutlineUVThickness or 0.0018
+				local cardinalOffsets = {
+					baseOffset + Vector2.new(off, 0),
+					baseOffset + Vector2.new(-off, 0),
+					baseOffset + Vector2.new(0, off),
+					baseOffset + Vector2.new(0, -off),
+				}
+				for i, uvOff in ipairs(cardinalOffsets) do
+					makeLayer("_Outline_" .. i, uvOff, baseZ, Color3.new(0, 0, 0), sourceDecal.Transparency)
+				end
+				for i = 1, (Config.AlphaCrushLayers or 2) do
+					makeLayer("_AlphaCrush_" .. i, baseOffset, baseZ + 1, Color3.new(0, 0, 0), sourceDecal.Transparency)
+				end
+			end
+
+			local topColor = sourceDecal.Color3
+			if Config.MainDecalTint and topColor == Color3.new(1, 1, 1) then topColor = Config.MainDecalTint end
+			makeLayer("_ClassicMain", baseOffset, baseZ + 2, topColor, sourceDecal.Transparency)
+
+			return stack
+		end
+
+		-- Dynamic faces (FaceControls) and decal-less heads are left untouched
+		local function isDynamicOrDecallessHead(head)
+			if head:FindFirstChildOfClass("FaceControls") ~= nil then return true, {} end
+
+			local decals = {}
+			for _, child in ipairs(head:GetChildren()) do
+				if child:IsA("Decal") and not isGenerated(child) and getDecalTextureUri(child) ~= "" then
+					table.insert(decals, child)
+				end
+			end
+			if #decals == 0 then return true, {} end
+			return false, decals
+		end
+
+		-- 2006 T-shirt SurfaceGui (Retro2006LogoGui -> Badge): shaded, pixelated, outlined
+		local function setupTorsoTShirtGui(sgui)
+			if not odState.active or isGenerated(sgui) then return end
+			local parentPart = sgui.Parent
+			if not parentPart or not parentPart:IsA("BasePart") then return end
+
+			if not TrackedSurfaceGuis[sgui] then
+				TrackedSurfaceGuis[sgui] = {
+					LightInfluence = sgui.LightInfluence,
+					Brightness = sgui.Brightness,
+					ZIndexBehavior = sgui.ZIndexBehavior,
+				}
+			end
+
+			pcall(function()
+				sgui.LightInfluence = Config.TShirtLightInfluence or 1
+				sgui.Brightness = 1.0
+				sgui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+			end)
+
+			for _, child in ipairs(sgui:GetChildren()) do
+				if child:IsA("ImageLabel") and not isGenerated(child) then
+					if not TrackedImageLabels[child] then
+						TrackedImageLabels[child] = {
+							ImageColor3 = child.ImageColor3,
+							ZIndex = child.ZIndex,
+							ResampleMode = getRestrictedProperty(child, "ResampleMode"),
+						}
+					end
+
+					child.ZIndex = math.max(child.ZIndex, 5)
+					child.ImageColor3 = Config.TShirtColorTint or Color3.fromRGB(255, 255, 255)
+					if Config.TShirtPixelatedFiltering then
+						pcall(function() child.ResampleMode = Enum.ResamplerMode.Pixelated end)
+					end
+
+					if not TShirtGuiStacks[child] then
+						local outlineEntries = {}
+						if Config.EnableThickOutlines then
+							local px = Config.TShirtOutlinePixelThickness or 1
+							local pixelOffsets = {
+								UDim2.fromOffset(px, 0), UDim2.fromOffset(-px, 0),
+								UDim2.fromOffset(0, px), UDim2.fromOffset(0, -px),
+							}
+							for i, off in ipairs(pixelOffsets) do
+								local outImg = Instance.new("ImageLabel")
+								markGenerated(outImg)
+								outImg.Name = child.Name .. "_ClassicBorder_" .. i
+								outImg.BackgroundTransparency = 1
+								outImg.Size = child.Size
+								outImg.Position = child.Position + off
+								outImg.ScaleType = child.ScaleType
+								outImg.Image = child.Image
+								outImg.ImageColor3 = Color3.new(0, 0, 0)
+								outImg.ImageTransparency = child.ImageTransparency
+								outImg.Rotation = child.Rotation
+								outImg.ZIndex = child.ZIndex - 1
+								if Config.TShirtPixelatedFiltering then
+									pcall(function() outImg.ResampleMode = Enum.ResamplerMode.Pixelated end)
+								end
+								outImg.Parent = sgui
+								table.insert(outlineEntries, { Label = outImg, Offset = off })
+							end
+						end
+						TShirtGuiStacks[child] = { Gui = sgui, OutlineLabels = outlineEntries }
+					end
+				end
+			end
+		end
+
+		-- Head decal layers go on a transparent shell part kept in the camera, so
+		-- character scripts (like 2006 avatar) never find and purge them.
+		local function setupCharacterHead(character, head)
+			if not odState.active then return end
+			local skipHead, headDecals = isDynamicOrDecallessHead(head)
+
+			local torso = character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
+			if torso then
+				for _, child in ipairs(torso:GetChildren()) do
+					if child:IsA("SurfaceGui") then setupTorsoTShirtGui(child) end
+				end
+			end
+
+			if skipHead then
+				if HeadShells[head] then
+					if HeadShells[head].ShellPart then
+						pcall(function() HeadShells[head].ShellPart:Destroy() end)
+					end
+					HeadShells[head] = nil
+				end
+				return
+			end
+
+			local shellData = HeadShells[head]
+			if not shellData or not shellData.ShellPart or not shellData.ShellPart.Parent then
+				local shellPart = Instance.new("Part")
+				markGenerated(shellPart)
+				shellPart.Name = "ClassicHeadShell_" .. character.Name
+				shellPart.Size = head.Size
+				shellPart.CFrame = head.CFrame
+				shellPart.Transparency = 1
+				shellPart.CanCollide = false
+				shellPart.CanQuery = false
+				shellPart.CanTouch = false
+				shellPart.Massless = true
+				shellPart.CastShadow = false
+				shellPart.Anchored = false
+
+				local shellMesh = Instance.new("SpecialMesh")
+				markGenerated(shellMesh)
+				shellMesh.Name = "Mesh"
+				shellMesh.MeshType = Enum.MeshType.Head
+				shellMesh.Scale = Vector3.new(1.251, 1.251, 1.251)
+				shellMesh.Parent = shellPart
+
+				local weld = Instance.new("WeldConstraint")
+				markGenerated(weld)
+				weld.Part0 = head
+				weld.Part1 = shellPart
+				weld.Parent = shellPart
+
+				shellPart.Parent = odState.overlay
+
+				shellData = { ShellPart = shellPart, ShellMesh = shellMesh, Weld = weld, DecalStacks = {} }
+				HeadShells[head] = shellData
+			end
+
+			for _, decal in ipairs(headDecals) do
+				local texUri = getDecalTextureUri(decal)
+				if not TrackedDecals[decal] then
+					TrackedDecals[decal] = {
+						Color3 = decal.Color3,
+						Transparency = decal.Transparency,
+						ZIndex = decal.ZIndex,
+						LocalTransparencyModifier = getRestrictedProperty(decal, "LocalTransparencyModifier") or 0,
+						ResampleMode = getRestrictedProperty(decal, "ResampleMode"),
+					}
+				end
+				if Config.PixelatedFiltering then
+					setRestrictedProperty(decal, "ResampleMode", Enum.ResamplerMode.Pixelated)
+				end
+				applyPBRPropertiesToDecal(decal, texUri)
+				if not shellData.DecalStacks[decal] then
+					shellData.DecalStacks[decal] = createDecalStackOnPart(decal, shellData.ShellPart)
+				end
+			end
+		end
+
+		-- Every frame: keep head shells matched to their heads and T-shirt outlines matched to their badges
+		local function syncOverlays()
+			if not odState.active then return end
+			local overlay = odState.overlay
+			if overlay.Parent ~= (workspace.CurrentCamera or workspace) then
+				overlay.Parent = workspace.CurrentCamera or workspace
+			end
+
+			for head, shellData in pairs(HeadShells) do
+				if not head or not head.Parent or not shellData.ShellPart or not shellData.ShellPart.Parent then
+					if shellData.ShellPart then pcall(function() shellData.ShellPart:Destroy() end) end
+					HeadShells[head] = nil
+					continue
+				end
+
+				if head:FindFirstChildOfClass("FaceControls") ~= nil then
+					pcall(function() shellData.ShellPart:Destroy() end)
+					HeadShells[head] = nil
+					continue
+				end
+
+				local shellPart = shellData.ShellPart
+				local shellMesh = shellData.ShellMesh
+
+				if shellPart.Size ~= head.Size then shellPart.Size = head.Size end
+				if not shellData.Weld or not shellData.Weld.Parent or shellData.Weld.Part0 ~= head then
+					shellPart.CFrame = head.CFrame
+				end
+
+				local srcMesh = head:FindFirstChildOfClass("SpecialMesh")
+				if srcMesh then
+					if shellMesh.MeshType ~= srcMesh.MeshType then shellMesh.MeshType = srcMesh.MeshType end
+					if shellMesh.MeshId ~= srcMesh.MeshId then shellMesh.MeshId = srcMesh.MeshId end
+					local targetScale = srcMesh.Scale * 1.001
+					if shellMesh.Scale ~= targetScale then shellMesh.Scale = targetScale end
+					if shellMesh.Offset ~= srcMesh.Offset then shellMesh.Offset = srcMesh.Offset end
+				elseif head:IsA("MeshPart") then
+					if shellMesh.MeshType ~= Enum.MeshType.FileMesh then shellMesh.MeshType = Enum.MeshType.FileMesh end
+					if shellMesh.MeshId ~= head.MeshId then shellMesh.MeshId = head.MeshId end
+					shellMesh.Scale = Vector3.new(1.001, 1.001, 1.001)
+				end
+
+				for _, child in ipairs(head:GetChildren()) do
+					if child:IsA("Decal") and not isGenerated(child) and not shellData.DecalStacks[child]
+						and getDecalTextureUri(child) ~= "" then
+						shellData.DecalStacks[child] = createDecalStackOnPart(child, shellPart)
+					end
+				end
+
+				for srcDecal, stack in pairs(shellData.DecalStacks) do
+					if not srcDecal or srcDecal.Parent ~= head then
+						for _, layer in ipairs(stack) do
+							if layer and layer.Parent then layer:Destroy() end
+						end
+						shellData.DecalStacks[srcDecal] = nil
+					else
+						local texUri = getDecalTextureUri(srcDecal)
+						local visTrans = 1
+						if head.LocalTransparencyModifier <= 0.9 then
+							visTrans = math.max(srcDecal.Transparency, head.Transparency)
+						end
+						for _, layer in ipairs(stack) do
+							if layer and layer.Parent then
+								if layer.Texture ~= texUri then layer.Texture = texUri end
+								if layer.Face ~= srcDecal.Face then layer.Face = srcDecal.Face end
+								if layer.Transparency ~= visTrans then layer.Transparency = visTrans end
+							end
+						end
+					end
+				end
+			end
+
+			for badgeLabel, stackInfo in pairs(TShirtGuiStacks) do
+				local sgui = stackInfo.Gui
+				if not badgeLabel or not badgeLabel.Parent or not sgui or not sgui.Parent then
+					TShirtGuiStacks[badgeLabel] = nil
+					continue
+				end
+
+				if sgui.LightInfluence ~= 1 then sgui.LightInfluence = 1 end
+				if sgui.Brightness ~= 1.0 then sgui.Brightness = 1.0 end
+
+				local targetTint = Config.TShirtColorTint or Color3.fromRGB(255, 255, 255)
+				if badgeLabel.ImageColor3 ~= targetTint then badgeLabel.ImageColor3 = targetTint end
+				if Config.TShirtPixelatedFiltering and badgeLabel.ResampleMode ~= Enum.ResamplerMode.Pixelated then
+					pcall(function() badgeLabel.ResampleMode = Enum.ResamplerMode.Pixelated end)
+				end
+
+				for _, entry in ipairs(stackInfo.OutlineLabels) do
+					local lbl = entry.Label
+					if lbl and lbl.Parent then
+						local targetPos = badgeLabel.Position + entry.Offset
+						if lbl.Position ~= targetPos then lbl.Position = targetPos end
+						if lbl.Size ~= badgeLabel.Size then lbl.Size = badgeLabel.Size end
+						if lbl.Image ~= badgeLabel.Image then lbl.Image = badgeLabel.Image end
+						if lbl.ImageTransparency ~= badgeLabel.ImageTransparency then lbl.ImageTransparency = badgeLabel.ImageTransparency end
+						if lbl.ScaleType ~= badgeLabel.ScaleType then lbl.ScaleType = badgeLabel.ScaleType end
+					end
+				end
+			end
+		end
+
+		local function isInsideCharacter(instance)
+			local current = instance.Parent
+			while current and current ~= workspace do
+				if current:IsA("Model") and current:FindFirstChildOfClass("Humanoid") then return true end
+				current = current.Parent
+			end
+			return false
+		end
+
+		-- Non-head workspace decals (studs and surface textures are always skipped)
+		local function processGeneralDecal(inst)
+			if not odState.active then return false end
+			if not inst:IsA("Decal") or isGenerated(inst) or TrackedDecals[inst] then return false end
+			if isStudOrSurfaceDecal(inst) then return false end
+
+			local okAttr, alreadyDone = pcall(function() return inst:GetAttribute(ProcessedTag) == true end)
+			if okAttr and alreadyDone then return false end
+
+			local parentPart = inst.Parent
+			if not parentPart or not parentPart:IsA("BasePart") or isGenerated(parentPart) then return false end
+
+			if parentPart.Name == "Head" and parentPart.Parent and parentPart.Parent:FindFirstChildOfClass("Humanoid") then
+				setupCharacterHead(parentPart.Parent, parentPart)
+				return true
+			end
+
+			if Config.TargetScope == "CharactersOnly" and not isInsideCharacter(inst) then return false end
+
+			local texUri = getDecalTextureUri(inst)
+			if texUri == "" or inst.Transparency >= 0.99 then return false end
+
+			pcall(function() inst:SetAttribute(ProcessedTag, true) end)
+
+			TrackedDecals[inst] = {
+				Color3 = inst.Color3,
+				Transparency = inst.Transparency,
+				ZIndex = inst.ZIndex,
+				LocalTransparencyModifier = getRestrictedProperty(inst, "LocalTransparencyModifier") or 0,
+				ResampleMode = getRestrictedProperty(inst, "ResampleMode"),
+			}
+
+			if Config.PixelatedFiltering then
+				setRestrictedProperty(inst, "ResampleMode", Enum.ResamplerMode.Pixelated)
+			end
+			applyPBRPropertiesToDecal(inst, texUri)
+			createDecalStackOnPart(inst, parentPart)
+			return true
+		end
+
+		local function onCharacterAdded(character)
+			task.spawn(function()
+				local head = character:WaitForChild("Head", 5)
+				if head and head:IsA("BasePart") then setupCharacterHead(character, head) end
+				local torso = character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
+				if torso then
+					for _, child in ipairs(torso:GetChildren()) do
+						if child:IsA("SurfaceGui") then setupTorsoTShirtGui(child) end
+					end
+				end
+			end)
+		end
+
+		local function isTShirtGui(sgui)
+			local part = sgui.Parent
+			return sgui.Name == "Retro2006LogoGui" or sgui.Name == "ClassicTShirtGui"
+				or (part ~= nil and (part.Name == "Torso" or part.Name == "UpperTorso"))
+		end
+
+		local function onDescendantAdded(desc)
+			if desc:IsA("Decal") then
+				if not isStudOrSurfaceDecal(desc) then
+					task.defer(function() pcall(processGeneralDecal, desc) end)
+				end
+			elseif desc:IsA("BasePart") and desc.Name == "Head" then
+				task.defer(function()
+					local model = desc.Parent
+					if model and model:IsA("Model") and model:FindFirstChildOfClass("Humanoid") then
+						pcall(setupCharacterHead, model, desc)
+					end
+				end)
+			elseif desc:IsA("SurfaceGui") then
+				task.defer(function()
+					if isTShirtGui(desc) then pcall(setupTorsoTShirtGui, desc) end
+				end)
+			elseif desc:IsA("ImageLabel") then
+				task.defer(function()
+					local sgui = desc.Parent
+					if sgui and sgui:IsA("SurfaceGui") and not isGenerated(desc) and isTShirtGui(sgui) then
+						pcall(setupTorsoTShirtGui, sgui)
+					end
+				end)
+			end
+		end
+
+		function actions.applyOldDecal()
+			if odState.active then return end
+			odState.active = true
+
+			-- The standalone gist exposes this; clear it so the layers don't stack twice
+			if type(genv.DisableOldDecalRenderer) == "function" then
+				pcall(genv.DisableOldDecalRenderer)
+			end
+
+			elevateIdentity()
+			if not odState.pbrMaps then odState.pbrMaps = buildPBRMaps() end
+
+			local overlay = Instance.new("Folder")
+			overlay.Name = "__OldRobloxDecalOverlays"
+			overlay.Parent = workspace.CurrentCamera or workspace
+			odState.overlay = overlay
+
+			table.insert(Connections, RunService.RenderStepped:Connect(syncOverlays))
+
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr.Character then onCharacterAdded(plr.Character) end
+				table.insert(Connections, plr.CharacterAdded:Connect(onCharacterAdded))
+			end
+			table.insert(Connections, Players.PlayerAdded:Connect(function(plr)
+				table.insert(Connections, plr.CharacterAdded:Connect(onCharacterAdded))
+			end))
+
+			local convertedCount = 0
+			for _, desc in ipairs(workspace:GetDescendants()) do
+				if desc:IsA("Model") and desc:FindFirstChildOfClass("Humanoid") then
+					local head = desc:FindFirstChild("Head")
+					if head and head:IsA("BasePart") then pcall(setupCharacterHead, desc, head) end
+				elseif desc:IsA("SurfaceGui") and (desc.Name == "Retro2006LogoGui" or desc.Name == "ClassicTShirtGui") then
+					pcall(setupTorsoTShirtGui, desc)
+				elseif desc:IsA("Decal") and not isStudOrSurfaceDecal(desc) then
+					local ok, applied = pcall(processGeneralDecal, desc)
+					if ok and applied then convertedCount += 1 end
+				end
+			end
+
+			table.insert(Connections, workspace.DescendantAdded:Connect(onDescendantAdded))
+			print(string.format("[Old Decal] Enabled. Processed %d decals, head faces & 2006 T-shirts (studs & surface textures protected).", convertedCount))
+		end
+
+		function actions.restoreOldDecal()
+			if not odState.active then return end
+			odState.active = false
+
+			for _, conn in ipairs(Connections) do
+				if conn.Connected then conn:Disconnect() end
+			end
+			table.clear(Connections)
+
+			for _, shellData in pairs(HeadShells) do
+				if shellData.ShellPart then pcall(function() shellData.ShellPart:Destroy() end) end
+			end
+			table.clear(HeadShells)
+			table.clear(TShirtGuiStacks)
+
+			if odState.overlay then
+				pcall(function() odState.overlay:Destroy() end)
+				odState.overlay = nil
+			end
+
+			for _, inst in ipairs(CreatedInstances) do
+				if inst and inst.Parent then pcall(function() inst:Destroy() end) end
+			end
+			table.clear(CreatedInstances)
+
+			for sgui, orig in pairs(TrackedSurfaceGuis) do
+				if sgui and sgui.Parent then
+					pcall(function()
+						sgui.LightInfluence = orig.LightInfluence
+						sgui.Brightness = orig.Brightness
+						sgui.ZIndexBehavior = orig.ZIndexBehavior
+					end)
+				end
+			end
+			table.clear(TrackedSurfaceGuis)
+
+			for lbl, orig in pairs(TrackedImageLabels) do
+				if lbl and lbl.Parent then
+					pcall(function()
+						lbl.ImageColor3 = orig.ImageColor3
+						lbl.ZIndex = orig.ZIndex
+						if orig.ResampleMode ~= nil then lbl.ResampleMode = orig.ResampleMode end
+					end)
+				end
+			end
+			table.clear(TrackedImageLabels)
+
+			for decal, orig in pairs(TrackedDecals) do
+				if decal and decal.Parent then
+					pcall(function()
+						decal:SetAttribute(ProcessedTag, nil)
+						decal.Color3 = orig.Color3
+						decal.Transparency = orig.Transparency
+						decal.ZIndex = orig.ZIndex
+						setRestrictedProperty(decal, "LocalTransparencyModifier", orig.LocalTransparencyModifier or 0)
+						if orig.ResampleMode ~= nil then
+							setRestrictedProperty(decal, "ResampleMode", orig.ResampleMode)
+						end
+					end)
+				end
+			end
+			table.clear(TrackedDecals)
+			print("[Old Decal] Disabled, original decals and GUIs restored.")
+		end
+	end
+
+	------------------------------------------------------------
 	-- UI CONSTRUCTION
 	------------------------------------------------------------
 	local infoPanel = sg:FindFirstChild("SkipInfoPanel", true)
@@ -1468,50 +2947,70 @@ task.spawn(function()
 		obj.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + amount)
 	end
 
-	pushDown(destroyBtn, 180)
+	-- This addon's rows start where the base GUI's destroy button sits, then the destroy
+	-- button and bottom spacer get pushed below everything added here.
+	local ROW_HEIGHT   = 30
+	local startY       = destroyBtn.Position.Y.Offset
+	local decalBtnY    = startY + 7 * ROW_HEIGHT + 10
+	local ADDON_HEIGHT = 7 * ROW_HEIGHT + 10 + 36 + 10
+
+	pushDown(destroyBtn, ADDON_HEIGHT)
 	local spacer = scroll:FindFirstChild("BPBottomSpacer")
-	if spacer then pushDown(spacer, 180) end
+	if spacer then pushDown(spacer, ADDON_HEIGHT) end
 
 	if scroll:IsA("ScrollingFrame") then
 		scroll.CanvasSize = UDim2.new(
 			scroll.CanvasSize.X.Scale,
 			scroll.CanvasSize.X.Offset,
 			scroll.CanvasSize.Y.Scale,
-			scroll.CanvasSize.Y.Offset + 180
+			scroll.CanvasSize.Y.Offset + ADDON_HEIGHT
 		)
 	end
 
-	local function createAddonRow(rowSpec)
-		local existing = scroll:FindFirstChild(rowSpec.containerName)
+	-- Moves every panel row below yPos when a dropdown opens or closes. It only looks at
+	-- positions, so rows from the base script move too.
+	local function shiftBelow(yPos, amount)
+		for _, child in ipairs(scroll:GetChildren()) do
+			if child:IsA("GuiObject") and child.Position.Y.Scale == 0 and child.Position.Y.Offset > yPos then
+				pushDown(child, amount)
+			end
+		end
+	end
+
+	-- Label + box + "?" row. Rows inside a dropdown get a small indent and smaller text.
+	local function buildRow(parent, containerName, labelText, yPos, boxName, helpName)
+		local isOption = parent ~= scroll
+		local existing = parent:FindFirstChild(containerName)
 		if existing then existing:Destroy() end
 
 		local cont = Instance.new("Frame")
-		cont.Name = rowSpec.containerName
-		cont.Size = UDim2.new(1, -30, 0, 30)
-		cont.Position = UDim2.new(0, 15, 0, rowSpec.yPos)
+		cont.Name = containerName
+		cont.Size = isOption and UDim2.new(1, 0, 0, 30) or UDim2.new(1, -30, 0, 30)
+		cont.Position = isOption and UDim2.new(0, 0, 0, yPos) or UDim2.new(0, 15, 0, yPos)
 		cont.BackgroundTransparency = 1
 		cont.ZIndex = 96
-		cont.Parent = scroll
+		cont.Parent = parent
 
 		local lbl = Instance.new("TextLabel")
-		lbl.Size = UDim2.new(0, 130, 1, 0)
+		lbl.Size = isOption and UDim2.new(0, 112, 1, 0) or UDim2.new(0, 130, 1, 0)
+		lbl.Position = isOption and UDim2.new(0, 6, 0, 0) or UDim2.new(0, 0, 0, 0)
 		lbl.BackgroundTransparency = 1
 		lbl.FontFace = fontBold
-		lbl.TextSize = 16
+		lbl.TextSize = isOption and 14 or 16
 		lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
 		lbl.TextXAlignment = Enum.TextXAlignment.Left
-		lbl.Text = rowSpec.label
+		lbl.Text = labelText
 		lbl.ZIndex = 97
 		lbl.Parent = cont
 
 		local cb = Instance.new("TextButton")
-		cb.Name = rowSpec.checkboxName
+		cb.Name = boxName
 		cb.Size = UDim2.new(0, 16, 0, 16)
 		cb.Position = UDim2.new(0, 118, 0.5, -8)
 		cb.BackgroundColor3 = Color3.fromRGB(220, 220, 220)
 		cb.BackgroundTransparency = 0.5
 		cb.BorderSizePixel = 0
-		cb.Text = state[rowSpec.stateKey] and "✓" or ""
+		cb.Text = ""
 		cb.Font = Enum.Font.SourceSansBold
 		cb.TextSize = 18
 		cb.TextColor3 = Color3.fromRGB(0, 220, 0)
@@ -1525,7 +3024,7 @@ task.spawn(function()
 		st.Parent = cb
 
 		local help = Instance.new("TextButton")
-		help.Name = rowSpec.helpName
+		help.Name = helpName
 		help.Size = UDim2.new(0, 16, 0, 16)
 		help.Position = UDim2.new(0, 140, 0.5, -8)
 		help.BackgroundColor3 = Color3.fromRGB(220, 220, 220)
@@ -1544,13 +3043,36 @@ task.spawn(function()
 		hst.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 		hst.Parent = help
 
+		return cont, cb, help
+	end
+
+	local rows = {}
+
+	local function createAddonRow(rowSpec, parent)
+		local _, cb, help = buildRow(parent or scroll, rowSpec.containerName, rowSpec.label, rowSpec.yPos, rowSpec.checkboxName, rowSpec.helpName)
+		cb.Text = state[rowSpec.stateKey] and "✓" or ""
+		rows[rowSpec.stateKey] = { spec = rowSpec, checkbox = cb }
+
 		cb.MouseButton1Click:Connect(function()
 			playClick()
 			local newState = not state[rowSpec.stateKey]
 			state[rowSpec.stateKey] = newState
 			cb.Text = newState and "✓" or ""
 			if newState then
-				task.spawn(rowSpec.onEnable)
+				-- Options that fight over the same thing switch each other off first.
+				local toRestore = {}
+				for _, otherKey in ipairs(rowSpec.exclusiveWith or {}) do
+					local other = rows[otherKey]
+					if state[otherKey] and other then
+						state[otherKey] = false
+						other.checkbox.Text = ""
+						table.insert(toRestore, other.spec.onDisable)
+					end
+				end
+				task.spawn(function()
+					for _, onDisable in ipairs(toRestore) do pcall(onDisable) end
+					rowSpec.onEnable()
+				end)
 			else
 				task.spawn(rowSpec.onDisable)
 			end
@@ -1563,12 +3085,60 @@ task.spawn(function()
 		end)
 	end
 
+	-- Header row in the same style whose box is an arrow that opens the option rows under it.
+	local function createDropdown(dropSpec)
+		local cont, arrow, help = buildRow(scroll, dropSpec.containerName, dropSpec.label, dropSpec.yPos, dropSpec.arrowName, dropSpec.helpName)
+		arrow.Text = "▼"
+		arrow.TextSize = 12
+		arrow.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+		local height = #dropSpec.options * ROW_HEIGHT
+		local options = Instance.new("Frame")
+		options.Name = dropSpec.containerName .. "Options"
+		options.Size = UDim2.new(1, 0, 0, height)
+		options.Position = UDim2.new(0, 0, 0, 30)
+		options.BackgroundTransparency = 1
+		options.Visible = false
+		options.ZIndex = 96
+		options.Parent = cont
+
+		local guide = Instance.new("Frame")
+		guide.Name = "Guide"
+		guide.Size = UDim2.new(0, 2, 1, -6)
+		guide.Position = UDim2.new(0, 0, 0, 3)
+		guide.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		guide.BackgroundTransparency = 0.5
+		guide.BorderSizePixel = 0
+		guide.ZIndex = 97
+		guide.Parent = options
+
+		for i, rowSpec in ipairs(dropSpec.options) do
+			rowSpec.yPos = (i - 1) * ROW_HEIGHT
+			createAddonRow(rowSpec, options)
+		end
+
+		local expanded = false
+		arrow.MouseButton1Click:Connect(function()
+			playClick()
+			expanded = not expanded
+			options.Visible = expanded
+			arrow.Text = expanded and "▲" or "▼"
+			cont.Size = UDim2.new(1, -30, 0, expanded and 30 + height or 30)
+			shiftBelow(cont.Position.Y.Offset, expanded and height or -height)
+		end)
+
+		help.MouseButton1Click:Connect(function()
+			playClick()
+			showInfo(dropSpec.helpText)
+		end)
+	end
+
 	createAddonRow({
 		containerName = "HealthESPContainer",
 		checkboxName  = "HealthESPCheckbox",
 		helpName      = "HealthESPHelpButton",
 		label         = "health ESP",
-		yPos          = 360,
+		yPos          = startY,
 		stateKey      = "isHealthESPEnabled",
 		onEnable      = actions.applyHealthESP,
 		onDisable     = actions.restoreHealthESP,
@@ -1580,7 +3150,7 @@ task.spawn(function()
 		checkboxName  = "RemoveProCheckbox",
 		helpName      = "RemoveProHelpButton",
 		label         = "remove pro",
-		yPos          = 390,
+		yPos          = startY + ROW_HEIGHT,
 		stateKey      = "isRemoveProEnabled",
 		onEnable      = actions.applyRemovePro,
 		onDisable     = actions.restoreRemovePro,
@@ -1592,7 +3162,7 @@ task.spawn(function()
 		checkboxName  = "OutlineCheckbox",
 		helpName      = "OutlineHelpButton",
 		label         = "outline",
-		yPos          = 420,
+		yPos          = startY + 2 * ROW_HEIGHT,
 		stateKey      = "isOutlineEnabled",
 		onEnable      = actions.applyOutline,
 		onDisable     = actions.restoreOutline,
@@ -1604,23 +3174,44 @@ task.spawn(function()
 		checkboxName  = "LensFlareCheckbox",
 		helpName      = "LensFlareHelpButton",
 		label         = "lens flare",
-		yPos          = 450,
+		yPos          = startY + 3 * ROW_HEIGHT,
 		stateKey      = "isLensFlareEnabled",
 		onEnable      = actions.applyLensFlare,
 		onDisable     = actions.restoreLensFlare,
 		helpText      = "Renders multi-beam classic sun lens flares aligned dynamically with the sun's trajectory, featuring Raycast-based obstacle occlusion checking."
 	})
 
-	createAddonRow({
-		containerName = "OldAvatarContainer",
-		checkboxName  = "OldAvatarCheckbox",
-		helpName      = "OldAvatarHelpButton",
-		label         = "old avatar",
-		yPos          = 480,
-		stateKey      = "isOldAvatarEnabled",
-		onEnable      = actions.applyOldAvatar,
-		onDisable     = actions.restoreOldAvatar,
-		helpText      = "Retro Suite 2006: 2010 Motor6D procedural animations for all players, 31-color palette quantization, 1-hat/1-hair enforcement, legacy audio, and original mesh/face textures."
+	createDropdown({
+		containerName = "AvatarDropdownContainer",
+		arrowName     = "AvatarDropdownArrow",
+		helpName      = "AvatarDropdownHelpButton",
+		label         = "avatar",
+		yPos          = startY + 4 * ROW_HEIGHT,
+		helpText      = "Press the arrow to pick an avatar era: old avatar or 2006 avatar. Only one can be on at a time.",
+		options = {
+			{
+				containerName = "OldAvatarContainer",
+				checkboxName  = "OldAvatarCheckbox",
+				helpName      = "OldAvatarHelpButton",
+				label         = "old avatar",
+				stateKey      = "isOldAvatarEnabled",
+				exclusiveWith = { "is2006AvatarEnabled" },
+				onEnable      = actions.applyOldAvatar,
+				onDisable     = actions.restoreOldAvatar,
+				helpText      = "Retro Suite 2006: 2010 Motor6D procedural animations for all players, 31-color palette quantization, 1-hat/1-hair enforcement, legacy audio, and original mesh/face textures."
+			},
+			{
+				containerName = "Avatar2006Container",
+				checkboxName  = "Avatar2006Checkbox",
+				helpName      = "Avatar2006HelpButton",
+				label         = "2006 avatar",
+				stateKey      = "is2006AvatarEnabled",
+				exclusiveWith = { "isOldAvatarEnabled" },
+				onEnable      = actions.apply2006Avatar,
+				onDisable     = actions.restore2006Avatar,
+				helpText      = "Retro Suite 2006 Executor Edition: random 2006 body colors, classic head and face, sharp R6 meshes, the 2006 T-shirt badge, retro animations and sounds for all players. Removes accessories and clothing; respawn to get them back after disabling."
+			},
+		}
 	})
 
 	createAddonRow({
@@ -1628,12 +3219,99 @@ task.spawn(function()
 		checkboxName  = "ClassicFaceCheckbox",
 		helpName      = "ClassicFaceHelpButton",
 		label         = "classic face",
-		yPos          = 510,
+		yPos          = startY + 5 * ROW_HEIGHT,
 		stateKey      = "isClassicFaceEnabled",
 		onEnable      = actions.applyClassicFace,
 		onDisable     = actions.restoreClassicFace,
 		helpText      = "Loads the external Classic Faces script via loadstring to convert modern R15 dynamic heads into classic R6 block heads with 2D face decals."
 	})
+
+	createDropdown({
+		containerName = "ColorLimiterDropdownContainer",
+		arrowName     = "ColorLimiterDropdownArrow",
+		helpName      = "ColorLimiterDropdownHelpButton",
+		label         = "color limiter",
+		yPos          = startY + 6 * ROW_HEIGHT,
+		helpText      = "Press the arrow to pick a color era. Every non-character part gets snapped to that era's palette. Only one can be on at a time.",
+		options = {
+			{
+				containerName = "Colors2012Container",
+				checkboxName  = "Colors2012Checkbox",
+				helpName      = "Colors2012HelpButton",
+				label         = "2012 colors",
+				stateKey      = "is2012ColorsEnabled",
+				exclusiveWith = { "is2006ColorsEnabled", "is2005ColorsEnabled" },
+				onEnable      = actions.apply2012Colors,
+				onDisable     = actions.restore2012Colors,
+				helpText      = "Snaps every non-character part to the 64-color 2012 BrickColor palette, re-checked every frame. Disabling restores the original colors."
+			},
+			{
+				containerName = "Colors2006Container",
+				checkboxName  = "Colors2006Checkbox",
+				helpName      = "Colors2006HelpButton",
+				label         = "2006 colors",
+				stateKey      = "is2006ColorsEnabled",
+				exclusiveWith = { "is2012ColorsEnabled", "is2005ColorsEnabled" },
+				onEnable      = actions.apply2006Colors,
+				onDisable     = actions.restore2006Colors,
+				helpText      = "Limits every non-character part to the 31 core 2006 BrickColors, re-checked every frame. Disabling restores the original colors."
+			},
+			{
+				containerName = "Colors2005Container",
+				checkboxName  = "Colors2005Checkbox",
+				helpName      = "Colors2005HelpButton",
+				label         = "2005 colors",
+				stateKey      = "is2005ColorsEnabled",
+				exclusiveWith = { "is2012ColorsEnabled", "is2006ColorsEnabled" },
+				onEnable      = actions.apply2005Colors,
+				onDisable     = actions.restore2005Colors,
+				helpText      = "Snaps every non-character part to the 20 colors of the 2005 Studio toolbar, re-checked every frame. Disabling restores the original colors."
+			},
+		}
+	})
+
+	------------------------------------------------------------
+	-- OLD DECAL RENDERING BUTTON
+	------------------------------------------------------------
+	local oldDecalBtn = scroll:FindFirstChild("BPOldDecalButton")
+	if oldDecalBtn then oldDecalBtn:Destroy() end
+
+	oldDecalBtn = Instance.new("TextButton")
+	oldDecalBtn.Name = "BPOldDecalButton"
+	oldDecalBtn.Size = UDim2.new(1, -30, 0, 36)
+	oldDecalBtn.Position = UDim2.new(0, 15, 0, decalBtnY)
+	oldDecalBtn.BorderSizePixel = 0
+	oldDecalBtn.FontFace = fontBold
+	oldDecalBtn.TextSize = 16
+	oldDecalBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	oldDecalBtn.ZIndex = 97
+	oldDecalBtn.AutoButtonColor = true
+	oldDecalBtn.Parent = scroll
+
+	local oldDecalCorner = Instance.new("UICorner")
+	oldDecalCorner.CornerRadius = UDim.new(0, 6)
+	oldDecalCorner.Parent = oldDecalBtn
+
+	local oldDecalStroke = Instance.new("UIStroke")
+	oldDecalStroke.Thickness = 1.5
+	oldDecalStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	oldDecalStroke.Parent = oldDecalBtn
+
+	local function refreshOldDecalBtn()
+		local on = state.isOldDecalEnabled
+		oldDecalBtn.Text = on and "old decal rendering: ON" or "old decal rendering: OFF"
+		oldDecalBtn.BackgroundColor3 = on and Color3.fromRGB(30, 140, 30) or Color3.fromRGB(70, 70, 70)
+		oldDecalStroke.Color = on and Color3.fromRGB(80, 220, 80) or Color3.fromRGB(160, 160, 160)
+	end
+	refreshOldDecalBtn()
+
+	oldDecalBtn.MouseButton1Click:Connect(function()
+		playClick()
+		state.isOldDecalEnabled = not state.isOldDecalEnabled
+		refreshOldDecalBtn()
+		task.spawn(state.isOldDecalEnabled and actions.applyOldDecal or actions.restoreOldDecal)
+		saveConfig()
+	end)
 
 	------------------------------------------------------------
 	-- APPLY SAVED STATE ON LOAD
@@ -1642,8 +3320,13 @@ task.spawn(function()
 	if state.isRemoveProEnabled then task.spawn(actions.applyRemovePro) end
 	if state.isOutlineEnabled then task.spawn(actions.applyOutline) end
 	if state.isLensFlareEnabled then task.spawn(actions.applyLensFlare) end
-	if state.isOldAvatarEnabled then task.spawn(actions.applyOldAvatar) end
+	if state.isOldAvatarEnabled then task.spawn(actions.applyOldAvatar)
+	elseif state.is2006AvatarEnabled then task.spawn(actions.apply2006Avatar) end
 	if state.isClassicFaceEnabled then task.spawn(actions.applyClassicFace) end
+	if state.is2012ColorsEnabled then task.spawn(actions.apply2012Colors)
+	elseif state.is2006ColorsEnabled then task.spawn(actions.apply2006Colors)
+	elseif state.is2005ColorsEnabled then task.spawn(actions.apply2005Colors) end
+	if state.isOldDecalEnabled then task.spawn(actions.applyOldDecal) end
 
-	print("[Addon] All 6 options loaded into GUI.")
+	print("[Addon] All options loaded into GUI.")
 end)
