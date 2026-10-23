@@ -1949,19 +1949,12 @@ task.spawn(function()
 
 				expanded = not expanded
 
+				-- The header stays 30 tall: its label and boxes are
+				-- centered in it, so growing it drags them over the
+				-- options. The options hang below it instead.
 				options.Visible = expanded
 				arrow.Text =
 					expanded and "▲" or "▼"
-
-				container.Size =
-					UDim2.new(
-						1,
-						-30,
-						0,
-						expanded
-							and 30 + height
-							or 30
-					)
 
 				shiftBelow(
 					container.Position.Y.Offset,
