@@ -2100,9 +2100,9 @@ task.spawn(function()
 
 	deselectBtn.BackgroundColor3 =
 		Color3.fromRGB(
-			70,
-			70,
-			70
+			200,
+			200,
+			200
 		)
 
 	deselectBtn.BorderSizePixel = 0
@@ -2119,11 +2119,12 @@ task.spawn(function()
 
 	deselectBtn.TextSize = 16
 
+	-- Dark text so it stays readable on the light gray.
 	deselectBtn.TextColor3 =
 		Color3.fromRGB(
-			255,
-			255,
-			255
+			30,
+			30,
+			30
 		)
 
 	deselectBtn.ZIndex = 97
@@ -2144,9 +2145,9 @@ task.spawn(function()
 
 	deselectStroke.Color =
 		Color3.fromRGB(
-			160,
-			160,
-			160
+			240,
+			240,
+			240
 		)
 
 	deselectStroke.Thickness = 1.5
