@@ -58,7 +58,15 @@ task.spawn(function()
 		isOldDecalEnabled    = config.isOldDecalEnabled or false,
 	}
 
+	-- Other addon scripts save into the same file, so it gets re-read first and only
+	-- this script's keys are written over it.
 	local function saveConfig()
+		if readfile and isfile and isfile(CONFIG_FILE) then
+			pcall(function()
+				local latest = HttpService:JSONDecode(readfile(CONFIG_FILE))
+				if type(latest) == "table" then config = latest end
+			end)
+		end
 		for key, value in pairs(state) do
 			config[key] = value
 		end
@@ -2947,13 +2955,15 @@ task.spawn(function()
 		obj.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + amount)
 	end
 
-	-- This addon's rows start where the base GUI's destroy button sits, then the destroy
-	-- button and bottom spacer get pushed below everything added here.
+	-- This addon's rows start where the base GUI's deselect all button (or destroy button)
+	-- sits, then those buttons and the bottom spacer get pushed below everything added here.
+	local deselectBtn  = scroll:FindFirstChild("BPDeselectAllButton", true)
 	local ROW_HEIGHT   = 30
-	local startY       = destroyBtn.Position.Y.Offset
+	local startY       = (deselectBtn or destroyBtn).Position.Y.Offset
 	local decalBtnY    = startY + 7 * ROW_HEIGHT + 10
 	local ADDON_HEIGHT = 7 * ROW_HEIGHT + 10 + 36 + 10
 
+	pushDown(deselectBtn, ADDON_HEIGHT)
 	pushDown(destroyBtn, ADDON_HEIGHT)
 	local spacer = scroll:FindFirstChild("BPBottomSpacer")
 	if spacer then pushDown(spacer, ADDON_HEIGHT) end
@@ -3312,6 +3322,35 @@ task.spawn(function()
 		task.spawn(state.isOldDecalEnabled and actions.applyOldDecal or actions.restoreOldDecal)
 		saveConfig()
 	end)
+
+	------------------------------------------------------------
+	-- DESELECT ALL
+	------------------------------------------------------------
+	-- The base GUI's "deselect all" button fires this event; turn every option here off.
+	local deselectEvent = scroll:FindFirstChild("BPDeselectAllEvent", true)
+	if deselectEvent then
+		deselectEvent.Event:Connect(function()
+			local toRestore = {}
+			for key, row in pairs(rows) do
+				if state[key] then
+					state[key] = false
+					row.checkbox.Text = ""
+					table.insert(toRestore, row.spec.onDisable)
+				end
+			end
+			if state.isOldDecalEnabled then
+				state.isOldDecalEnabled = false
+				refreshOldDecalBtn()
+				table.insert(toRestore, actions.restoreOldDecal)
+			end
+			saveConfig()
+			task.spawn(function()
+				for _, onDisable in ipairs(toRestore) do pcall(onDisable) end
+			end)
+		end)
+	else
+		warn("[Addon] Deselect all event not found; load the base addon first.")
+	end
 
 	------------------------------------------------------------
 	-- APPLY SAVED STATE ON LOAD

@@ -60,12 +60,41 @@ task.spawn(function()
 
 	config.Choices = config.Choices or {}
 
+	-- Other addon scripts save into the same file, so it gets
+	-- re-read first and only this script's keys are written over it.
+	local OWNED_KEYS = {
+		"isSkyboxEnabled",
+		"isSkybox2013Enabled",
+		"isRemoveLightingEnabled",
+		"isSmoothPlasticEnabled",
+		"isPlasticEnabled",
+		"is2009MaterialsEnabled",
+		"isLegacyMaterialsEnabled",
+		"isNoShadowsEnabled"
+	}
+
 	local function saveConfig()
 		if not writefile then
 			return
 		end
 
 		pcall(function()
+			local latest
+
+			if readfile and isfile and isfile(CONFIG_FILE) then
+				pcall(function()
+					latest = HttpService:JSONDecode(readfile(CONFIG_FILE))
+				end)
+			end
+
+			if type(latest) == "table" then
+				for _, key in ipairs(OWNED_KEYS) do
+					latest[key] = config[key]
+				end
+
+				config = latest
+			end
+
 			writefile(
 				CONFIG_FILE,
 				HttpService:JSONEncode(config)
@@ -2045,6 +2074,97 @@ task.spawn(function()
 		)
 
 	------------------------------------------------------------
+	-- DESELECT ALL BUTTON
+	------------------------------------------------------------
+	-- Other addon scripts find this event on the panel and turn
+	-- their own options off when it fires.
+	local deselectEvent =
+		Instance.new("BindableEvent")
+
+	deselectEvent.Name =
+		"BPDeselectAllEvent"
+
+	deselectEvent.Parent = hammerPanel
+
+	local deselectBtn =
+		Instance.new("TextButton")
+
+	deselectBtn.Name =
+		"BPDeselectAllButton"
+
+	deselectBtn.Size =
+		UDim2.new(1, -30, 0, 36)
+
+	deselectBtn.Position =
+		UDim2.new(0, 15, 0, 280)
+
+	deselectBtn.BackgroundColor3 =
+		Color3.fromRGB(
+			70,
+			70,
+			70
+		)
+
+	deselectBtn.BorderSizePixel = 0
+
+	deselectBtn.Text =
+		"deselect all"
+
+	if fontBold then
+		deselectBtn.FontFace = fontBold
+	else
+		deselectBtn.Font =
+			Enum.Font.SourceSansBold
+	end
+
+	deselectBtn.TextSize = 16
+
+	deselectBtn.TextColor3 =
+		Color3.fromRGB(
+			255,
+			255,
+			255
+		)
+
+	deselectBtn.ZIndex = 97
+	deselectBtn.AutoButtonColor = true
+	deselectBtn.Parent = hammerPanel
+
+	local deselectCorner =
+		Instance.new("UICorner")
+
+	deselectCorner.CornerRadius =
+		UDim.new(0, 6)
+
+	deselectCorner.Parent =
+		deselectBtn
+
+	local deselectStroke =
+		Instance.new("UIStroke")
+
+	deselectStroke.Color =
+		Color3.fromRGB(
+			160,
+			160,
+			160
+		)
+
+	deselectStroke.Thickness = 1.5
+
+	deselectStroke.ApplyStrokeMode =
+		Enum.ApplyStrokeMode.Border
+
+	deselectStroke.Parent =
+		deselectBtn
+
+	deselectBtn.MouseButton1Click:Connect(
+		function()
+			playClick()
+			deselectEvent:Fire()
+		end
+	)
+
+	------------------------------------------------------------
 	-- DESTROY GUI BUTTON
 	------------------------------------------------------------
 	local destroyBtn =
@@ -2057,7 +2177,7 @@ task.spawn(function()
 		UDim2.new(1, -30, 0, 36)
 
 	destroyBtn.Position =
-		UDim2.new(0, 15, 0, 280)
+		UDim2.new(0, 15, 0, 322)
 
 	destroyBtn.BackgroundColor3 =
 		Color3.fromRGB(
@@ -2131,7 +2251,7 @@ task.spawn(function()
 		UDim2.new(0, 1, 0, 30)
 
 	bottomSpacer.Position =
-		UDim2.new(0, 0, 0, 320)
+		UDim2.new(0, 0, 0, 362)
 
 	bottomSpacer.BackgroundTransparency = 1
 	bottomSpacer.BorderSizePixel = 0
@@ -2157,6 +2277,8 @@ task.spawn(function()
 				"LegacyMaterialsContainer",
 				"NoShadowsContainer",
 				"SkipInfoPanel",
+				"BPDeselectAllButton",
+				"BPDeselectAllEvent",
 				"BPDestroyGuiButton",
 				"BPAddonScroller",
 				"BPBottomSpacer"
@@ -2480,6 +2602,10 @@ task.spawn(function()
 
 				task.defer(function()
 
+					-- Tracked so saveConfig doesn't write back a stale value.
+					config.isSkyboxEnabled =
+						skyboxCheckbox2008.Text == "✓"
+
 					if skyboxCheckbox2008.Text == "✓" then
 
 						if isSkybox2013Enabled then
@@ -2509,6 +2635,94 @@ task.spawn(function()
 			end
 		)
 	end
+
+	------------------------------------------------------------
+	-- DESELECT ALL
+	------------------------------------------------------------
+	deselectEvent.Event:Connect(
+		function()
+
+			local restores = {}
+
+			local skyWasOn = isSkybox2013Enabled
+
+			if skyboxCheckbox2008
+				and skyboxCheckbox2008.Text == "✓"
+			then
+				skyboxCheckbox2008.Text = ""
+				config.isSkyboxEnabled = false
+				skyWasOn = true
+			end
+
+			if skyWasOn then
+				table.insert(restores, restoreOriginalSky)
+			end
+
+			if isRemoveLightingEnabled then
+				table.insert(restores, restoreLighting)
+			end
+
+			if isSmoothPlasticEnabled then
+				table.insert(restores, restoreSmooth)
+			end
+
+			if isPlasticEnabled then
+				table.insert(restores, restorePlastic)
+			end
+
+			if is2009MaterialsEnabled then
+				table.insert(restores, restore2009)
+			end
+
+			if isLegacyMaterialsEnabled then
+				table.insert(restores, restoreLegacy)
+			end
+
+			if isNoShadowsEnabled then
+				table.insert(restores, restoreShadows)
+			end
+
+			isSkybox2013Enabled = false
+			isRemoveLightingEnabled = false
+			isSmoothPlasticEnabled = false
+			isPlasticEnabled = false
+			is2009MaterialsEnabled = false
+			isLegacyMaterialsEnabled = false
+			isNoShadowsEnabled = false
+
+			for _, checkbox in ipairs({
+				sky2013CB,
+				rlCB,
+				spCB,
+				plCB,
+				m09CB,
+				lmCB,
+				shCB
+			}) do
+				checkbox.Text = ""
+			end
+
+			config.isSkybox2013Enabled = false
+			config.isRemoveLightingEnabled = false
+			config.isSmoothPlasticEnabled = false
+			config.isPlasticEnabled = false
+			config.is2009MaterialsEnabled = false
+			config.isLegacyMaterialsEnabled = false
+			config.isNoShadowsEnabled = false
+
+			saveConfig()
+
+			task.spawn(function()
+				for _, restore in ipairs(restores) do
+					pcall(restore)
+				end
+			end)
+
+			print(
+				"[Bloxy Paradox] All options deselected."
+			)
+		end
+	)
 
 	------------------------------------------------------------
 	-- HELP SYSTEM
