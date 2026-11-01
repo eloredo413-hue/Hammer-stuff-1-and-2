@@ -64,7 +64,19 @@ task.spawn(function()
 		isLegacyLightingEnabled = config.isLegacyLightingEnabled or false,
 	}
 
+	-- Hammer stuff 1 (and the base GUI) save to the same file, so re-read it first and
+	-- only write this script's own keys on top. Otherwise each script would write back
+	-- its old copy of the other's settings.
 	local function saveConfig()
+		if readfile and isfile then
+			pcall(function()
+				if isfile(CONFIG_FILE) then
+					local latest = HttpService:JSONDecode(readfile(CONFIG_FILE))
+					if type(latest) == "table" then config = latest end
+				end
+			end)
+		end
+		config.Choices = config.Choices or {}
 		for key, value in pairs(state) do
 			config[key] = value
 		end
@@ -3145,6 +3157,7 @@ task.spawn(function()
 	local spacer = scroll:FindFirstChild("BPBottomSpacer")
 	local layoutEntries = {} -- top-level rows in order: { frame = Frame, extra = function() -> number }
 	local oldDecalBtn
+	local unselectBtn
 
 	local function setY(obj, y)
 		if not obj then return end
@@ -3168,6 +3181,8 @@ task.spawn(function()
 
 		y = y + 10
 		if oldDecalBtn then setY(oldDecalBtn, y) end
+		y = y + 36 + 10
+		if unselectBtn then setY(unselectBtn, y) end
 		y = y + 36 + 10
 		setY(destroyBtn, y)
 		if spacer then setY(spacer, y + 40) end
@@ -3545,7 +3560,82 @@ task.spawn(function()
 		saveConfig()
 	end)
 
-	-- Put every row, the decal button, destroy button and spacer where they belong.
+	------------------------------------------------------------
+	-- UNSELECT ALL BUTTON
+	-- Turns off every option in this script and in Hammer stuff 1, the same way unticking
+	-- each one would (so each option puts back what it changed). Dropdowns stay open or
+	-- closed as they are; only the boxes change, so the layout doesn't move.
+	------------------------------------------------------------
+	unselectBtn = scroll:FindFirstChild("BPUnselectAllButton")
+	if unselectBtn then unselectBtn:Destroy() end
+
+	unselectBtn = Instance.new("TextButton")
+	unselectBtn.Name = "BPUnselectAllButton"
+	unselectBtn.Size = UDim2.new(1, -30, 0, 36)
+	unselectBtn.Position = UDim2.new(0, 15, 0, decalBtnY + 46)
+	unselectBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+	unselectBtn.BorderSizePixel = 0
+	unselectBtn.FontFace = fontBold
+	unselectBtn.TextSize = 16
+	unselectBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	unselectBtn.Text = "unselect all"
+	unselectBtn.ZIndex = 97
+	unselectBtn.AutoButtonColor = true
+	unselectBtn.Parent = scroll
+
+	local unselectCorner = Instance.new("UICorner")
+	unselectCorner.CornerRadius = UDim.new(0, 6)
+	unselectCorner.Parent = unselectBtn
+
+	local unselectStroke = Instance.new("UIStroke")
+	unselectStroke.Color = Color3.fromRGB(160, 160, 160)
+	unselectStroke.Thickness = 1.5
+	unselectStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	unselectStroke.Parent = unselectBtn
+
+	local unselecting = false
+
+	local function unselectAll()
+		if unselecting then return end
+		unselecting = true
+
+		-- Untick everything first so the boxes update at once, then restore in order.
+		local restores = {}
+		for stateKey, row in pairs(rows) do
+			if state[stateKey] then
+				state[stateKey] = false
+				row.checkbox.Text = ""
+				table.insert(restores, row.spec.onDisable)
+			end
+		end
+		if state.isOldDecalEnabled then
+			state.isOldDecalEnabled = false
+			refreshOldDecalBtn()
+			table.insert(restores, actions.restoreOldDecal)
+		end
+		saveConfig()
+
+		-- Hammer stuff 1's options (2013 skybox, remove lighting, materials, no shadows)
+		local genv = (getgenv and getgenv()) or _G
+		if type(genv.BPHammer1UnselectAll) == "function" then
+			pcall(genv.BPHammer1UnselectAll)
+		end
+
+		task.spawn(function()
+			for _, restore in ipairs(restores) do
+				pcall(restore)
+			end
+			unselecting = false
+			print("[Addon] Unselected everything.")
+		end)
+	end
+
+	unselectBtn.MouseButton1Click:Connect(function()
+		playClick()
+		unselectAll()
+	end)
+
+	-- Put every row, the buttons, destroy button and spacer where they belong.
 	relayout()
 
 	------------------------------------------------------------
