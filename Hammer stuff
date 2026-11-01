@@ -3126,40 +3126,54 @@ task.spawn(function()
 		return
 	end
 
-	local function pushDown(obj, amount)
+	-- This addon's rows start where the base GUI's destroy button sits; the old decal
+	-- button, destroy button and bottom spacer go below them. Everything is placed by
+	-- relayout() from absolute positions, so running this script again (or opening and
+	-- closing dropdowns) never pushes things further down than they belong.
+	local ROW_HEIGHT = 30
+	local startY     = destroyBtn.Position.Y.Offset
+	local decalBtnY  = startY + 9 * ROW_HEIGHT + 10
+
+	-- Ran before: start where our first row already is, not at the (already moved)
+	-- destroy button.
+	local previousFirstRow = scroll:FindFirstChild("HealthESPContainer")
+	if previousFirstRow then
+		startY = previousFirstRow.Position.Y.Offset
+		decalBtnY = startY + 9 * ROW_HEIGHT + 10
+	end
+
+	local spacer = scroll:FindFirstChild("BPBottomSpacer")
+	local layoutEntries = {} -- top-level rows in order: { frame = Frame, extra = function() -> number }
+	local oldDecalBtn
+
+	local function setY(obj, y)
 		if not obj then return end
 		local p = obj.Position
-		obj.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + amount)
+		obj.Position = UDim2.new(p.X.Scale, p.X.Offset, 0, y)
 	end
 
-	-- This addon's rows start where the base GUI's destroy button sits, then the destroy
-	-- button and bottom spacer get pushed below everything added here.
-	local ROW_HEIGHT   = 30
-	local startY       = destroyBtn.Position.Y.Offset
-	local ROW_COUNT    = 9
-	local decalBtnY    = startY + ROW_COUNT * ROW_HEIGHT + 10
-	local ADDON_HEIGHT = ROW_COUNT * ROW_HEIGHT + 10 + 36 + 10
+	local function relayout()
+		-- The base script's dropdown moves our rows by position, so read where the
+		-- first one is now instead of trusting startY.
+		local first = layoutEntries[1]
+		if first and first.frame.Parent then
+			startY = first.frame.Position.Y.Offset
+		end
 
-	pushDown(destroyBtn, ADDON_HEIGHT)
-	local spacer = scroll:FindFirstChild("BPBottomSpacer")
-	if spacer then pushDown(spacer, ADDON_HEIGHT) end
+		local y = startY
+		for _, entry in ipairs(layoutEntries) do
+			setY(entry.frame, y)
+			y = y + ROW_HEIGHT + entry.extra()
+		end
 
-	if scroll:IsA("ScrollingFrame") then
-		scroll.CanvasSize = UDim2.new(
-			scroll.CanvasSize.X.Scale,
-			scroll.CanvasSize.X.Offset,
-			scroll.CanvasSize.Y.Scale,
-			scroll.CanvasSize.Y.Offset + ADDON_HEIGHT
-		)
-	end
+		y = y + 10
+		if oldDecalBtn then setY(oldDecalBtn, y) end
+		y = y + 36 + 10
+		setY(destroyBtn, y)
+		if spacer then setY(spacer, y + 40) end
 
-	-- Moves every panel row below yPos when a dropdown opens or closes. It only looks at
-	-- positions, so rows from the base script move too.
-	local function shiftBelow(yPos, amount)
-		for _, child in ipairs(scroll:GetChildren()) do
-			if child:IsA("GuiObject") and child.Position.Y.Scale == 0 and child.Position.Y.Offset > yPos then
-				pushDown(child, amount)
-			end
+		if scroll:IsA("ScrollingFrame") and scroll.AutomaticCanvasSize == Enum.AutomaticSize.None then
+			scroll.CanvasSize = UDim2.new(scroll.CanvasSize.X.Scale, scroll.CanvasSize.X.Offset, 0, y + 40 + 30)
 		end
 	end
 
@@ -3235,7 +3249,10 @@ task.spawn(function()
 	local rows = {}
 
 	local function createAddonRow(rowSpec, parent)
-		local _, cb, help = buildRow(parent or scroll, rowSpec.containerName, rowSpec.label, rowSpec.yPos, rowSpec.checkboxName, rowSpec.helpName)
+		local cont, cb, help = buildRow(parent or scroll, rowSpec.containerName, rowSpec.label, rowSpec.yPos, rowSpec.checkboxName, rowSpec.helpName)
+		if not parent then
+			table.insert(layoutEntries, { frame = cont, extra = function() return 0 end })
+		end
 		cb.Text = state[rowSpec.stateKey] and "✓" or ""
 		rows[rowSpec.stateKey] = { spec = rowSpec, checkbox = cb }
 
@@ -3304,13 +3321,18 @@ task.spawn(function()
 		end
 
 		local expanded = false
+		table.insert(layoutEntries, {
+			frame = cont,
+			extra = function() return expanded and height or 0 end,
+		})
+
 		arrow.MouseButton1Click:Connect(function()
 			playClick()
 			expanded = not expanded
 			options.Visible = expanded
 			arrow.Text = expanded and "▲" or "▼"
 			cont.Size = UDim2.new(1, -30, 0, expanded and 30 + height or 30)
-			shiftBelow(cont.Position.Y.Offset, expanded and height or -height)
+			relayout()
 		end)
 
 		help.MouseButton1Click:Connect(function()
@@ -3483,7 +3505,7 @@ task.spawn(function()
 	------------------------------------------------------------
 	-- OLD DECAL RENDERING BUTTON
 	------------------------------------------------------------
-	local oldDecalBtn = scroll:FindFirstChild("BPOldDecalButton")
+	oldDecalBtn = scroll:FindFirstChild("BPOldDecalButton")
 	if oldDecalBtn then oldDecalBtn:Destroy() end
 
 	oldDecalBtn = Instance.new("TextButton")
@@ -3522,6 +3544,9 @@ task.spawn(function()
 		task.spawn(state.isOldDecalEnabled and actions.applyOldDecal or actions.restoreOldDecal)
 		saveConfig()
 	end)
+
+	-- Put every row, the decal button, destroy button and spacer where they belong.
+	relayout()
 
 	------------------------------------------------------------
 	-- APPLY SAVED STATE ON LOAD

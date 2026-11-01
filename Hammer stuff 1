@@ -304,6 +304,20 @@ task.spawn(function()
 			)
 
 		if oldScroller then
+			-- Running this again: put the panel's own rows back
+			-- first, or they would be destroyed with the old
+			-- scroller. Our rows (and the other addon's) are
+			-- rebuilt, so those go with it.
+			for _, child in ipairs(oldScroller:GetChildren()) do
+				if child:GetAttribute("BPBaseChild") then
+					local baseY = child:GetAttribute("BPBaseY")
+					if baseY then
+						local p = child.Position
+						child.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, baseY)
+					end
+					child.Parent = hammerPanel
+				end
+			end
 			oldScroller:Destroy()
 		end
 
@@ -334,6 +348,10 @@ task.spawn(function()
 					or child:IsA("TextButton")
 				)
 			then
+				-- Remember it's the panel's own row (and where it
+				-- was) so a second run can hand it back.
+				child:SetAttribute("BPBaseChild", true)
+				child:SetAttribute("BPBaseY", child.Position.Y.Offset)
 				child.Parent = scroller
 			end
 		end
