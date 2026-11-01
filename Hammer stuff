@@ -1,5 +1,7 @@
 -- [[ HEALTH ESP + REMOVE PRO + CLASSIC OUTLINE + LENS FLARE + AVATAR DROPDOWN (OLD / 2006)
---    + CLASSIC FACE + COLOR LIMITER DROPDOWN (2012 / 2006 / 2005) + OLD DECAL RENDERING BUTTON ]]
+--    + CLASSIC FACE + COLOR LIMITER DROPDOWN (2012 / 2006 / 2005) + HIDE GAME GUI + LEGACY LIGHTING
+--    + OLD DECAL RENDERING BUTTON ]]
+-- Execute Hammer stuff 1 first, then this.
 
 task.spawn(function()
 	local HttpService = game:GetService("HttpService")
@@ -35,7 +37,9 @@ task.spawn(function()
 		return
 	end
 
-	local scroll = hammerPanel:FindFirstChild("BPAddonScroller") or hammerPanel
+	-- Hammer stuff 1 builds the scroller and the destroy button; give it a moment
+	-- if this was executed right after it.
+	local scroll = hammerPanel:FindFirstChild("BPAddonScroller") or hammerPanel:WaitForChild("BPAddonScroller", 10) or hammerPanel
 
 	local config = {}
 	if readfile and isfile and isfile(CONFIG_FILE) then
@@ -56,6 +60,8 @@ task.spawn(function()
 		is2006ColorsEnabled  = config.is2006ColorsEnabled or false,
 		is2005ColorsEnabled  = config.is2005ColorsEnabled or false,
 		isOldDecalEnabled    = config.isOldDecalEnabled or false,
+		isHideGameGuiEnabled    = config.isHideGameGuiEnabled or false,
+		isLegacyLightingEnabled = config.isLegacyLightingEnabled or false,
 	}
 
 	local function saveConfig()
@@ -2918,6 +2924,180 @@ task.spawn(function()
 	end
 
 	------------------------------------------------------------
+	-- 10. HIDE GAME GUI (LOADSTRING HOOK)
+	-- The GUI Hider gist hides the game's own ScreenGuis (TopbarPlus,
+	-- HUDs, shop buttons) and leaves Bloxy Paradox and the era GUIs alone.
+	-- It puts getgenv().GameGuiHider (Show / Hide) in place, so after the
+	-- first load the box only calls those.
+	------------------------------------------------------------
+	do
+		local GUI_HIDER_URL = "https://gist.githubusercontent.com/eloredo413-hue/5f6ae5da66e0bdeb47cbe178214a639e/raw/8690adafb55d8a2b92428cc6f9f661a937ee042a/Gui%2520Hider"
+		local genv = (getgenv and getgenv()) or _G
+		local loading = false
+
+		function actions.applyHideGameGui()
+			local hider = genv.GameGuiHider
+			if hider and type(hider.Hide) == "function" then
+				pcall(hider.Hide)
+				print("[Hide Game GUI] Enabled.")
+				return
+			end
+			if loading then return end
+			loading = true
+			-- The gist hides the game GUI as soon as it runs.
+			local ok, err = pcall(function()
+				loadstring(game:HttpGet(GUI_HIDER_URL))()
+			end)
+			loading = false
+			if ok then
+				print("[Hide Game GUI] Loaded via loadstring.")
+				-- Unticked while it was downloading
+				if not state.isHideGameGuiEnabled then actions.restoreHideGameGui() end
+			else
+				warn("[Hide Game GUI] Loadstring failed: " .. tostring(err))
+			end
+		end
+
+		function actions.restoreHideGameGui()
+			local hider = genv.GameGuiHider
+			if hider and type(hider.Show) == "function" then
+				pcall(hider.Show)
+				print("[Hide Game GUI] Disabled, game GUI shown again.")
+			end
+		end
+	end
+
+	------------------------------------------------------------
+	-- 11. LEGACY LIGHTING (LOADSTRING HOOK)
+	-- The Legacy Lighting gist (2017 OldGraphics lighting) has no off
+	-- switch: it sets Technology to Compatibility, turns Lighting's
+	-- effects off and keeps them off, removes the Atmosphere and adds a
+	-- grey ColorCorrectionEffect. Before running it, the lighting is
+	-- remembered here; unticking puts all of that back.
+	------------------------------------------------------------
+	do
+		local LEGACY_LIGHTING_URL = "https://gist.githubusercontent.com/eloredo413-hue/09783d75811e0cac34d222908cb25670/raw/94382a78fc770c1fc4a4860cbe095b4c72b1bb6b/Legacy%2520Lighting%2520Option"
+		local EFFECT_CLASSES = { "DepthOfFieldEffect", "SunRaysEffect", "BloomEffect", "BlurEffect", "ColorCorrectionEffect" }
+
+		local llState = { active = false, busy = false }
+
+		local function isEffect(inst)
+			for _, className in ipairs(EFFECT_CLASSES) do
+				if inst.ClassName == className then return true end
+			end
+			return false
+		end
+
+		local function connectionList(signal)
+			if type(getconnections) ~= "function" then return {} end
+			local ok, list = pcall(getconnections, signal)
+			return (ok and type(list) == "table") and list or {}
+		end
+
+		function actions.applyLegacyLighting()
+			if llState.active or llState.busy then return end
+			llState.busy = true
+
+			-- Remember everything the gist changes
+			local saved = { effects = {}, atmospheres = {}, children = {} }
+			if type(gethiddenproperty) == "function" then
+				pcall(function() saved.technology = gethiddenproperty(Lighting, "Technology") end)
+			end
+			for _, child in ipairs(Lighting:GetChildren()) do
+				saved.children[child] = true
+				if isEffect(child) then
+					local signal = child:GetPropertyChangedSignal("Enabled")
+					local before = {}
+					for _, c in ipairs(connectionList(signal)) do
+						if c.Function then before[c.Function] = true end
+					end
+					saved.effects[child] = { enabled = child.Enabled, signal = signal, before = before }
+				elseif child:IsA("Atmosphere") then
+					local ok, copy = pcall(function() return child:Clone() end)
+					if ok and copy then table.insert(saved.atmospheres, copy) end
+				end
+			end
+
+			local ok, err = pcall(function()
+				loadstring(game:HttpGet(LEGACY_LIGHTING_URL))()
+			end)
+			llState.busy = false
+			if not ok then
+				warn("[Legacy Lighting] Loadstring failed: " .. tostring(err))
+				return
+			end
+
+			-- The gist's "keep it off" connections and the effect it added
+			for effect, info in pairs(saved.effects) do
+				info.added = {}
+				for _, c in ipairs(connectionList(info.signal)) do
+					-- Only connections whose function is known and new: never the game's own
+					if c.Function and not info.before[c.Function] then table.insert(info.added, c) end
+				end
+			end
+			saved.newChildren = {}
+			for _, child in ipairs(Lighting:GetChildren()) do
+				if not saved.children[child] and child:IsA("ColorCorrectionEffect") then
+					table.insert(saved.newChildren, child)
+				end
+			end
+
+			llState.saved = saved
+			llState.active = true
+			print("[Legacy Lighting] Loaded via loadstring.")
+
+			-- Unticked while it was downloading
+			if not state.isLegacyLightingEnabled then actions.restoreLegacyLighting() end
+		end
+
+		function actions.restoreLegacyLighting()
+			if not llState.active then return end
+			llState.active = false
+			local saved = llState.saved
+			llState.saved = nil
+			if not saved then return end
+
+			for _, child in ipairs(saved.newChildren) do
+				pcall(function() child:Destroy() end)
+			end
+
+			for effect, info in pairs(saved.effects) do
+				if effect.Parent then
+					local freed = #info.added > 0
+					for _, c in ipairs(info.added) do
+						local stopped = pcall(function() c:Disconnect() end)
+						if not stopped then stopped = pcall(function() c:Disable() end) end
+						freed = freed and stopped
+					end
+					if freed then
+						pcall(function() effect.Enabled = info.enabled end)
+					elseif info.enabled then
+						-- No getconnections: the gist would switch the effect straight
+						-- back off, so swap in a copy that has no connection on it.
+						pcall(function()
+							local copy = effect:Clone()
+							copy.Enabled = true
+							copy.Parent = effect.Parent
+							effect:Destroy()
+						end)
+					end
+				end
+			end
+
+			for _, atmosphere in ipairs(saved.atmospheres) do
+				if not Lighting:FindFirstChildOfClass("Atmosphere") then
+					pcall(function() atmosphere.Parent = Lighting end)
+				end
+			end
+
+			if saved.technology ~= nil and type(sethiddenproperty) == "function" then
+				pcall(sethiddenproperty, Lighting, "Technology", saved.technology)
+			end
+			print("[Legacy Lighting] Disabled, original lighting restored.")
+		end
+	end
+
+	------------------------------------------------------------
 	-- UI CONSTRUCTION
 	------------------------------------------------------------
 	local infoPanel = sg:FindFirstChild("SkipInfoPanel", true)
@@ -2936,6 +3116,11 @@ task.spawn(function()
 	end
 
 	local destroyBtn = scroll:FindFirstChild("BPDestroyGuiButton", true)
+	local waitUntil = os.clock() + 10
+	while not destroyBtn and os.clock() < waitUntil do
+		task.wait(0.1)
+		destroyBtn = scroll:FindFirstChild("BPDestroyGuiButton", true)
+	end
 	if not destroyBtn then
 		warn("[Addon] Could not find destroy button.")
 		return
@@ -2951,8 +3136,9 @@ task.spawn(function()
 	-- button and bottom spacer get pushed below everything added here.
 	local ROW_HEIGHT   = 30
 	local startY       = destroyBtn.Position.Y.Offset
-	local decalBtnY    = startY + 7 * ROW_HEIGHT + 10
-	local ADDON_HEIGHT = 7 * ROW_HEIGHT + 10 + 36 + 10
+	local ROW_COUNT    = 9
+	local decalBtnY    = startY + ROW_COUNT * ROW_HEIGHT + 10
+	local ADDON_HEIGHT = ROW_COUNT * ROW_HEIGHT + 10 + 36 + 10
 
 	pushDown(destroyBtn, ADDON_HEIGHT)
 	local spacer = scroll:FindFirstChild("BPBottomSpacer")
@@ -3270,6 +3456,30 @@ task.spawn(function()
 		}
 	})
 
+	createAddonRow({
+		containerName = "HideGameGuiContainer",
+		checkboxName  = "HideGameGuiCheckbox",
+		helpName      = "HideGameGuiHelpButton",
+		label         = "hide game GUI",
+		yPos          = startY + 7 * ROW_HEIGHT,
+		stateKey      = "isHideGameGuiEnabled",
+		onEnable      = actions.applyHideGameGui,
+		onDisable     = actions.restoreHideGameGui,
+		helpText      = "Hides the game's own GUI (TopbarPlus buttons, HUDs, shop buttons, menus). Bloxy Paradox, the retro top bar and every era GUI stay. Untick to show the game GUI again. Right Ctrl also switches it."
+	})
+
+	createAddonRow({
+		containerName = "LegacyLightingContainer",
+		checkboxName  = "LegacyLightingCheckbox",
+		helpName      = "LegacyLightingHelpButton",
+		label         = "legacy lighting",
+		yPos          = startY + 8 * ROW_HEIGHT,
+		stateKey      = "isLegacyLightingEnabled",
+		onEnable      = actions.applyLegacyLighting,
+		onDisable     = actions.restoreLegacyLighting,
+		helpText      = "2017 OldGraphics lighting: Compatibility technology, no bloom, blur, sun rays, depth of field or atmosphere, and flat grey colors. Untick to put the original lighting back."
+	})
+
 	------------------------------------------------------------
 	-- OLD DECAL RENDERING BUTTON
 	------------------------------------------------------------
@@ -3327,6 +3537,8 @@ task.spawn(function()
 	elseif state.is2006ColorsEnabled then task.spawn(actions.apply2006Colors)
 	elseif state.is2005ColorsEnabled then task.spawn(actions.apply2005Colors) end
 	if state.isOldDecalEnabled then task.spawn(actions.applyOldDecal) end
+	if state.isHideGameGuiEnabled then task.spawn(actions.applyHideGameGui) end
+	if state.isLegacyLightingEnabled then task.spawn(actions.applyLegacyLighting) end
 
 	print("[Addon] All options loaded into GUI.")
 end)
