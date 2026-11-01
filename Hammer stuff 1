@@ -60,9 +60,44 @@ task.spawn(function()
 
 	config.Choices = config.Choices or {}
 
+	-- Hammer stuff 2 (and the base GUI) save to the same file, so
+	-- re-read it before writing and only put in the keys this
+	-- script changed. Otherwise each script would write back its
+	-- old copy of the other's settings.
+	local savedSnapshot = {}
+	for key, value in pairs(config) do
+		savedSnapshot[key] = value
+	end
+
+	local function readSavedConfig()
+		if not (readfile and isfile) then
+			return nil
+		end
+		local ok, decoded = pcall(function()
+			if isfile(CONFIG_FILE) then
+				return HttpService:JSONDecode(readfile(CONFIG_FILE))
+			end
+		end)
+		return (ok and type(decoded) == "table") and decoded or nil
+	end
+
 	local function saveConfig()
 		if not writefile then
 			return
+		end
+
+		local latest = readSavedConfig() or {}
+		for key, value in pairs(config) do
+			if savedSnapshot[key] ~= value then
+				latest[key] = value
+			end
+		end
+		latest.Choices = latest.Choices or config.Choices or {}
+
+		config = latest
+		table.clear(savedSnapshot)
+		for key, value in pairs(config) do
+			savedSnapshot[key] = value
 		end
 
 		pcall(function()
@@ -304,6 +339,20 @@ task.spawn(function()
 			)
 
 		if oldScroller then
+			-- Running this again: put the panel's own rows back
+			-- first, or they would be destroyed with the old
+			-- scroller. Our rows (and the other addon's) are
+			-- rebuilt, so those go with it.
+			for _, child in ipairs(oldScroller:GetChildren()) do
+				if child:GetAttribute("BPBaseChild") then
+					local baseY = child:GetAttribute("BPBaseY")
+					if baseY then
+						local p = child.Position
+						child.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, baseY)
+					end
+					child.Parent = hammerPanel
+				end
+			end
 			oldScroller:Destroy()
 		end
 
@@ -334,6 +383,10 @@ task.spawn(function()
 					or child:IsA("TextButton")
 				)
 			then
+				-- Remember it's the panel's own row (and where it
+				-- was) so a second run can hand it back.
+				child:SetAttribute("BPBaseChild", true)
+				child:SetAttribute("BPBaseY", child.Position.Y.Offset)
 				child.Parent = scroller
 			end
 		end
@@ -1685,8 +1738,8 @@ task.spawn(function()
 
 		label.Size =
 			isOption
-			and UDim2.new(0, 112, 1, 0)
-			or UDim2.new(0, 115, 1, 0)
+			and UDim2.new(0, 112, 0, 30)
+			or UDim2.new(0, 115, 0, 30)
 
 		label.Position =
 			isOption
@@ -1731,7 +1784,7 @@ task.spawn(function()
 			UDim2.new(0, 16, 0, 16)
 
 		checkbox.Position =
-			UDim2.new(0, 118, 0.5, -8)
+			UDim2.new(0, 118, 0, 7)
 
 		checkbox.BackgroundColor3 =
 			Color3.fromRGB(
@@ -1787,7 +1840,7 @@ task.spawn(function()
 			UDim2.new(0, 16, 0, 16)
 
 		help.Position =
-			UDim2.new(0, 140, 0.5, -8)
+			UDim2.new(0, 140, 0, 7)
 
 		help.BackgroundColor3 =
 			Color3.fromRGB(
@@ -2508,6 +2561,91 @@ task.spawn(function()
 				end)
 			end
 		)
+	end
+
+	------------------------------------------------------------
+	-- UNSELECT ALL (called by Hammer stuff 2's "unselect all"
+	-- button through getgenv().BPHammer1UnselectAll)
+	-- Turns off every option of this script the same way
+	-- unticking it would. Dropdowns stay open or closed as they
+	-- are; only the boxes change.
+	------------------------------------------------------------
+	local unselecting = false
+
+	local function unselectAll()
+		if unselecting then
+			return
+		end
+		unselecting = true
+
+		local restores = {}
+
+		if isSkybox2013Enabled then
+			isSkybox2013Enabled = false
+			sky2013CB.Text = ""
+			config.isSkybox2013Enabled = false
+			table.insert(restores, restoreOriginalSky)
+		end
+
+		if isRemoveLightingEnabled then
+			isRemoveLightingEnabled = false
+			rlCB.Text = ""
+			config.isRemoveLightingEnabled = false
+			table.insert(restores, restoreLighting)
+		end
+
+		if isSmoothPlasticEnabled then
+			isSmoothPlasticEnabled = false
+			spCB.Text = ""
+			config.isSmoothPlasticEnabled = false
+			table.insert(restores, restoreSmooth)
+		end
+
+		if isPlasticEnabled then
+			isPlasticEnabled = false
+			plCB.Text = ""
+			config.isPlasticEnabled = false
+			table.insert(restores, restorePlastic)
+		end
+
+		if is2009MaterialsEnabled then
+			is2009MaterialsEnabled = false
+			m09CB.Text = ""
+			config.is2009MaterialsEnabled = false
+			table.insert(restores, restore2009)
+		end
+
+		if isLegacyMaterialsEnabled then
+			isLegacyMaterialsEnabled = false
+			lmCB.Text = ""
+			config.isLegacyMaterialsEnabled = false
+			table.insert(restores, restoreLegacy)
+		end
+
+		if isNoShadowsEnabled then
+			isNoShadowsEnabled = false
+			shCB.Text = ""
+			config.isNoShadowsEnabled = false
+			table.insert(restores, restoreShadows)
+		end
+
+		saveConfig()
+
+		-- One after another, so restores that touch the same
+		-- parts (the material options) don't run over each other.
+		task.spawn(function()
+			for _, restore in ipairs(restores) do
+				pcall(restore)
+			end
+			unselecting = false
+		end)
+
+		return #restores
+	end
+
+	do
+		local genv = (getgenv and getgenv()) or _G
+		genv.BPHammer1UnselectAll = unselectAll
 	end
 
 	------------------------------------------------------------
