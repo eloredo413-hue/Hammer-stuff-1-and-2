@@ -3192,7 +3192,7 @@ task.spawn(function()
 		cont.Parent = parent
 
 		local lbl = Instance.new("TextLabel")
-		lbl.Size = isOption and UDim2.new(0, 112, 1, 0) or UDim2.new(0, 130, 1, 0)
+		lbl.Size = isOption and UDim2.new(0, 112, 0, 30) or UDim2.new(0, 130, 0, 30)
 		lbl.Position = isOption and UDim2.new(0, 6, 0, 0) or UDim2.new(0, 0, 0, 0)
 		lbl.BackgroundTransparency = 1
 		lbl.FontFace = fontBold
@@ -3206,7 +3206,7 @@ task.spawn(function()
 		local cb = Instance.new("TextButton")
 		cb.Name = boxName
 		cb.Size = UDim2.new(0, 16, 0, 16)
-		cb.Position = UDim2.new(0, 118, 0.5, -8)
+		cb.Position = UDim2.new(0, 118, 0, 7)
 		cb.BackgroundColor3 = Color3.fromRGB(220, 220, 220)
 		cb.BackgroundTransparency = 0.5
 		cb.BorderSizePixel = 0
@@ -3226,7 +3226,7 @@ task.spawn(function()
 		local help = Instance.new("TextButton")
 		help.Name = helpName
 		help.Size = UDim2.new(0, 16, 0, 16)
-		help.Position = UDim2.new(0, 140, 0.5, -8)
+		help.Position = UDim2.new(0, 140, 0, 7)
 		help.BackgroundColor3 = Color3.fromRGB(220, 220, 220)
 		help.BackgroundTransparency = 0.5
 		help.BorderSizePixel = 0

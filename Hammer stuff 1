@@ -1703,8 +1703,8 @@ task.spawn(function()
 
 		label.Size =
 			isOption
-			and UDim2.new(0, 112, 1, 0)
-			or UDim2.new(0, 115, 1, 0)
+			and UDim2.new(0, 112, 0, 30)
+			or UDim2.new(0, 115, 0, 30)
 
 		label.Position =
 			isOption
@@ -1749,7 +1749,7 @@ task.spawn(function()
 			UDim2.new(0, 16, 0, 16)
 
 		checkbox.Position =
-			UDim2.new(0, 118, 0.5, -8)
+			UDim2.new(0, 118, 0, 7)
 
 		checkbox.BackgroundColor3 =
 			Color3.fromRGB(
@@ -1805,7 +1805,7 @@ task.spawn(function()
 			UDim2.new(0, 16, 0, 16)
 
 		help.Position =
-			UDim2.new(0, 140, 0.5, -8)
+			UDim2.new(0, 140, 0, 7)
 
 		help.BackgroundColor3 =
 			Color3.fromRGB(
